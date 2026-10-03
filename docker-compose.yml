@@ -39,6 +39,25 @@ services:
       retries: 20
       start_period: 60s
 
+  # ---------- application services (profile: app) ----------
+  auth-service:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-messaging}
+      DB_USERNAME: ${POSTGRES_USER:-messaging}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      JWT_ISSUER: http://auth-service:8081
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres-data:
   scylla-data:

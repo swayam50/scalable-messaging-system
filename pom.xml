@@ -21,7 +21,7 @@
 
     <modules>
         <module>messaging-common</module>
-        <!-- <module>auth-service</module> -->
+        <module>auth-service</module>
     </modules>
 
     <properties>

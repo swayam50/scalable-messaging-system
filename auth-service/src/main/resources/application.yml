@@ -1,0 +1,36 @@
+# All environment-specific values come from environment variables (defaults = local docker compose).
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/messaging}
+    username: ${DB_USERNAME:messaging}
+    password: ${DB_PASSWORD:change-me}
+  jpa:
+    open-in-view: false            # no lazy loading from controllers; services own transactions
+    hibernate:
+      ddl-auto: validate           # Flyway owns the schema; Hibernate only checks it matches
+  flyway:
+    enabled: true
+
+auth:
+  jwt:
+    issuer: ${JWT_ISSUER:http://localhost:8081}
+    access-token-ttl: ${JWT_ACCESS_TTL:15m}
+    refresh-token-ttl: ${JWT_REFRESH_TTL:7d}
+    key-id: ${JWT_KEY_ID:auth-key-1}
+    private-key: ${JWT_PRIVATE_KEY:}
+    public-key: ${JWT_PUBLIC_KEY:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
