@@ -2,8 +2,8 @@ package io.wulfcodes.messaging.auth.service.impl;
 
 import io.wulfcodes.messaging.auth.exception.UserNotFoundException;
 import io.wulfcodes.messaging.auth.mapper.UserMapper;
-import io.wulfcodes.messaging.auth.model.dto.response.UserResponse;
-import io.wulfcodes.messaging.auth.model.dto.response.UserSummaryResponse;
+import io.wulfcodes.messaging.common.model.dto.response.UserResponse;
+import io.wulfcodes.messaging.common.model.dto.response.UserSummaryResponse;
 import io.wulfcodes.messaging.auth.model.po.User;
 import io.wulfcodes.messaging.auth.repository.UserRepository;
 import io.wulfcodes.messaging.auth.service.spec.UserService;

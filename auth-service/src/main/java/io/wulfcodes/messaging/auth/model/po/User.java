@@ -1,7 +1,7 @@
 package io.wulfcodes.messaging.auth.model.po;
 
 import io.wulfcodes.messaging.auth.model.po.eo.AuditInfo;
-import io.wulfcodes.messaging.auth.model.vo.UserStatus;
+import io.wulfcodes.messaging.common.model.vo.UserStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;

@@ -1,9 +1,9 @@
 package io.wulfcodes.messaging.auth.service.spec;
 
-import io.wulfcodes.messaging.auth.model.dto.request.LoginRequest;
-import io.wulfcodes.messaging.auth.model.dto.request.RefreshRequest;
-import io.wulfcodes.messaging.auth.model.dto.request.RegisterRequest;
-import io.wulfcodes.messaging.auth.model.dto.response.AuthResponse;
+import io.wulfcodes.messaging.common.model.dto.request.LoginRequest;
+import io.wulfcodes.messaging.common.model.dto.request.RefreshRequest;
+import io.wulfcodes.messaging.common.model.dto.request.RegisterRequest;
+import io.wulfcodes.messaging.common.model.dto.response.AuthResponse;
 
 public interface AuthService {
 

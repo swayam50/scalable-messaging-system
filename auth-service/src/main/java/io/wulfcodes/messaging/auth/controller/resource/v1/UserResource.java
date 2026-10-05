@@ -1,8 +1,8 @@
 package io.wulfcodes.messaging.auth.controller.resource.v1;
 
 import io.wulfcodes.messaging.auth.config.WebConfig;
-import io.wulfcodes.messaging.auth.model.dto.response.UserResponse;
-import io.wulfcodes.messaging.auth.model.dto.response.UserSummaryResponse;
+import io.wulfcodes.messaging.common.model.dto.response.UserResponse;
+import io.wulfcodes.messaging.common.model.dto.response.UserSummaryResponse;
 import io.wulfcodes.messaging.auth.service.spec.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;

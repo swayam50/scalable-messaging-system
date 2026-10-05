@@ -1,4 +1,4 @@
-package io.wulfcodes.messaging.auth.model.dto.request;
+package io.wulfcodes.messaging.common.model.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
 

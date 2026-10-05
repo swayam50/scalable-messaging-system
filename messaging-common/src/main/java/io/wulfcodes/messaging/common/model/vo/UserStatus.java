@@ -1,4 +1,4 @@
-package io.wulfcodes.messaging.auth.model.vo;
+package io.wulfcodes.messaging.common.model.vo;
 
 /**
  * Lifecycle state of an account. Only ACTIVE users can log in or refresh tokens.

@@ -1,4 +1,4 @@
-package io.wulfcodes.messaging.auth.model.dto.response;
+package io.wulfcodes.messaging.common.model.dto.response;
 
 /**
  * Public view of another user: no email or account details.

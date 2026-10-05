@@ -1,6 +1,6 @@
-package io.wulfcodes.messaging.auth.model.dto.response;
+package io.wulfcodes.messaging.common.model.dto.response;
 
-import io.wulfcodes.messaging.auth.model.vo.TokenType;
+import io.wulfcodes.messaging.common.model.vo.TokenType;
 
 /**
  * @param expiresIn access token lifetime in seconds

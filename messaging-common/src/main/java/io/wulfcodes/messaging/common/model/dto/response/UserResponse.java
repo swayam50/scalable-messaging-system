@@ -1,6 +1,6 @@
-package io.wulfcodes.messaging.auth.model.dto.response;
+package io.wulfcodes.messaging.common.model.dto.response;
 
-import io.wulfcodes.messaging.auth.model.vo.UserStatus;
+import io.wulfcodes.messaging.common.model.vo.UserStatus;
 
 import java.time.Instant;
 

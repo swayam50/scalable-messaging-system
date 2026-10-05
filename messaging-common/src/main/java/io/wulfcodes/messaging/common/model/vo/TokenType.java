@@ -1,4 +1,4 @@
-package io.wulfcodes.messaging.auth.model.vo;
+package io.wulfcodes.messaging.common.model.vo;
 
 /**
  * OAuth2 token type returned to clients ("Authorization: Bearer &lt;token&gt;").
