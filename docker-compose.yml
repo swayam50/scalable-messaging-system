@@ -58,6 +58,25 @@ services:
       postgres:
         condition: service_healthy
 
+  chat-service:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: chat-service/Dockerfile
+    environment:
+      CHAT_WORKER_ID: "1"                       # Snowflake worker id: unique per chat node
+      SCYLLA_CONTACT_POINTS: scylla:9042
+      AUTH_JWKS_URI: http://auth-service:8081/.well-known/jwks.json
+      AUTH_ISSUER: http://auth-service:8081     # must match auth-service's JWT_ISSUER
+      CORS_ALLOWED_ORIGINS: http://localhost:8080
+    ports:
+      - "8082:8082"
+    depends_on:
+      scylla:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+
 volumes:
   postgres-data:
   scylla-data:
