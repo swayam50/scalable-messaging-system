@@ -1,6 +1,6 @@
 // Internal API between chat-service nodes.
-// When a message's recipient is owned by another node (consistent-hash ring),
-// the receiving node forwards it here; the owner pushes it to its local WebSockets.
+// When an event's recipient is owned by another node (consistent-hash ring), the node that
+// produced it forwards it here; the owner pushes it to its local WebSockets.
 syntax = "proto3";
 
 package messaging.chat.v1;
@@ -9,7 +9,10 @@ option java_multiple_files = true;
 option java_package = "io.wulfcodes.messaging.chat.grpc.proto";
 
 service NodeDelivery {
+  // Push one event to a user's sessions on the receiving (owner) node.
   rpc Deliver (DeliverRequest) returns (DeliverResponse);
+  // Which of these users (all owned by the receiving node) have at least one live session?
+  rpc GetPresence (PresenceQuery) returns (PresenceSnapshot);
 }
 
 message ChatMessage {
@@ -21,12 +24,49 @@ message ChatMessage {
   string client_message_id = 6;
 }
 
+message Receipt {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    DELIVERED = 1;
+    READ = 2;
+  }
+  string conversation_id = 1;
+  string user_id = 2;             // who received / read
+  string message_id = 3;          // up to (and including) this message
+  Status status = 4;
+}
+
+message Typing {
+  string conversation_id = 1;
+  string user_id = 2;
+  bool typing = 3;
+}
+
+message Presence {
+  string user_id = 1;
+  bool online = 2;
+  int64 last_seen_millis = 3;     // 0 = unknown / currently online
+}
+
 message DeliverRequest {
-  string user_id = 1;             // recipient whose sessions should receive the message
-  ChatMessage message = 2;
+  string user_id = 1;             // recipient whose sessions should receive the event
   string exclude_session_id = 3;  // empty = none
+  oneof event {                   // exactly one event type per request
+    ChatMessage message = 2;
+    Receipt receipt = 4;
+    Typing typing = 5;
+    Presence presence = 6;
+  }
 }
 
 message DeliverResponse {
   int32 delivered_sessions = 1;
+}
+
+message PresenceQuery {
+  repeated string user_ids = 1;
+}
+
+message PresenceSnapshot {
+  repeated string online_user_ids = 1;
 }

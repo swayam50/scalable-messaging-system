@@ -16,4 +16,7 @@ public interface ConversationService {
 
     /** Loads a conversation, failing with 404 if it does not exist or the user is not a participant. */
     Conversation requireParticipant(String conversationId, String userId);
+
+    /** Everyone the user has a conversation with (used to fan out presence changes). */
+    List<String> contactsOf(String userId);
 }

@@ -34,4 +34,19 @@ public class InboxEntry {
 
     @Column("preview")
     private String preview;
+
+    /** How far this user has read. */
+    @Column("last_read_message_id")
+    private Long lastReadMessageId;
+
+    /** How far the other participant has read (for "seen" ticks). */
+    @Column("peer_last_read_message_id")
+    private Long peerLastReadMessageId;
+
+    /** Unread = the last message is from the peer and newer than my read pointer. */
+    public boolean isUnreadFor(String userId) {
+        return lastMessageId != null
+                && !userId.equals(lastSenderId)
+                && (lastReadMessageId == null || lastReadMessageId < lastMessageId);
+    }
 }

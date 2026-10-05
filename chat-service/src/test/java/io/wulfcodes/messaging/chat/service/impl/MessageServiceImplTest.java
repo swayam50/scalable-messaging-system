@@ -18,6 +18,7 @@ import io.wulfcodes.messaging.chat.repository.InboxRepository;
 import io.wulfcodes.messaging.chat.repository.MessageRepository;
 import io.wulfcodes.messaging.chat.service.spec.ConversationService;
 import io.wulfcodes.messaging.chat.service.spec.DeliveryService;
+import io.wulfcodes.messaging.chat.service.spec.ReceiptService;
 import io.wulfcodes.messaging.chat.util.BucketUtil;
 import io.wulfcodes.messaging.common.model.vo.SnowflakeId;
 import io.wulfcodes.messaging.common.util.SnowflakeIdGenerator;
@@ -34,6 +35,7 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Set;
+import java.util.function.IntConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,6 +64,8 @@ class MessageServiceImplTest {
     private ConversationService conversationService;
     @Mock
     private DeliveryService deliveryService;
+    @Mock
+    private ReceiptService receiptService;
 
     private final MessageMapper messageMapper = new MessageMapperImpl();
     private MessageServiceImpl messageService;
@@ -71,7 +75,7 @@ class MessageServiceImplTest {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         ChatProperties properties = new ChatProperties(1, 4000, null, null, null, new ChatProperties.History(100), null, null);
         messageService = new MessageServiceImpl(messageRepository, inboxRepository, conversationService, deliveryService,
-                messageMapper, new SnowflakeIdGenerator(1, clock), properties, clock);
+                receiptService, messageMapper, new SnowflakeIdGenerator(1, clock), properties, clock);
     }
 
     @Test
@@ -79,7 +83,9 @@ class MessageServiceImplTest {
         when(conversationService.requireParticipant(CID, ALICE)).thenReturn(conversation(NOW));
         when(messageRepository.save(any(Message.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        MessageResponse response = messageService.send(ALICE, frame("hello"), "session-1");
+        List<String> order = new java.util.ArrayList<>();
+        MessageResponse response = messageService.send(ALICE, frame("hello"), "session-1", stored -> order.add("ack"));
+        assertThat(order).containsExactly("ack");
 
         ArgumentCaptor<Message> saved = ArgumentCaptor.forClass(Message.class);
         verify(messageRepository).save(saved.capture());
@@ -94,14 +100,21 @@ class MessageServiceImplTest {
 
         // recipient gets it; sender's other tabs too, but not the originating session
         ArgumentCaptor<ServerFrame> frame = ArgumentCaptor.forClass(ServerFrame.class);
-        verify(deliveryService).deliver(eq(BOB), frame.capture(), eq(null));
+        ArgumentCaptor<IntConsumer> onDelivered = ArgumentCaptor.forClass(IntConsumer.class);
+        verify(deliveryService).deliver(eq(BOB), frame.capture(), eq(null), onDelivered.capture());
         verify(deliveryService).deliver(eq(ALICE), any(ServerFrame.class), eq("session-1"));
         assertThat(frame.getValue().type()).isEqualTo(FrameType.MESSAGE);
+
+        // once bob's node reports a live session got it, alice gets a DELIVERED receipt
+        onDelivered.getValue().accept(0);
+        verify(receiptService, never()).notifyDelivered(any(), any());
+        onDelivered.getValue().accept(1);
+        verify(receiptService).notifyDelivered(response, BOB);
     }
 
     @Test
     void emptyBodyIsRejectedBeforeAnythingIsStored() {
-        assertThatThrownBy(() -> messageService.send(ALICE, frame("   "), "s"))
+        assertThatThrownBy(() -> messageService.send(ALICE, frame("   "), "s", stored -> { }))
                 .isInstanceOf(InvalidMessageException.class);
         verify(messageRepository, never()).save(any());
     }
@@ -110,7 +123,7 @@ class MessageServiceImplTest {
     void nonParticipantCannotSend() {
         when(conversationService.requireParticipant(CID, "MALLORY")).thenThrow(new ConversationNotFoundException(CID));
 
-        assertThatThrownBy(() -> messageService.send("MALLORY", frame("hi"), "s"))
+        assertThatThrownBy(() -> messageService.send("MALLORY", frame("hi"), "s", stored -> { }))
                 .isInstanceOf(ConversationNotFoundException.class);
         verify(messageRepository, never()).save(any());
     }
@@ -145,7 +158,7 @@ class MessageServiceImplTest {
     }
 
     private static ClientFrame frame(String body) {
-        return new ClientFrame(FrameType.SEND, CID, "c-1", body);
+        return new ClientFrame(FrameType.SEND, CID, "c-1", body, null, null);
     }
 
     private static Conversation conversation(Instant createdAt) {

@@ -25,10 +25,14 @@ public interface MessageMapper {
 
     List<MessageResponse> toResponses(List<Message> messages);
 
-    @Mapping(target = "conversationId", source = "key.conversationId")
-    @Mapping(target = "lastMessageId", source = "lastMessageId", qualifiedByName = "nullableIdToString")
-    @Mapping(target = "lastMessageAt", source = "lastMessageId", qualifiedByName = "nullableIdToInstant")
-    InboxEntryResponse toInboxResponse(InboxEntry entry);
+    /** {@code viewerId}: whose inbox this is, needed to decide "unread". */
+    @Mapping(target = "conversationId", source = "entry.key.conversationId")
+    @Mapping(target = "lastMessageId", source = "entry.lastMessageId", qualifiedByName = "nullableIdToString")
+    @Mapping(target = "lastMessageAt", source = "entry.lastMessageId", qualifiedByName = "nullableIdToInstant")
+    @Mapping(target = "lastReadMessageId", source = "entry.lastReadMessageId", qualifiedByName = "nullableIdToString")
+    @Mapping(target = "peerLastReadMessageId", source = "entry.peerLastReadMessageId", qualifiedByName = "nullableIdToString")
+    @Mapping(target = "unread", expression = "java(entry.isUnreadFor(viewerId))")
+    InboxEntryResponse toInboxResponse(InboxEntry entry, String viewerId);
 
     @Named("idToString")
     default String idToString(long id) {

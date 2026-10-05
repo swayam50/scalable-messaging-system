@@ -93,8 +93,8 @@ class ChatFlowIntegrationTest {
         alice.sendText("""
                 {"type":"SEND","conversationId":"%s","clientMessageId":"c-1","body":"Hi Bob"}""".formatted(conversationId), true);
 
-        String ack = aliceFrames.poll(10, TimeUnit.SECONDS);
-        String delivered = bobFrames.poll(10, TimeUnit.SECONDS);
+        String ack = next(aliceFrames);
+        String delivered = next(bobFrames);
         assertThat((String) JsonPath.read(ack, "$.type")).isEqualTo("ACK");
         assertThat((String) JsonPath.read(ack, "$.clientMessageId")).isEqualTo("c-1");
         assertThat((String) JsonPath.read(delivered, "$.type")).isEqualTo("MESSAGE");
@@ -124,7 +124,7 @@ class ChatFlowIntegrationTest {
         mallory.sendText("""
                 {"type":"SEND","conversationId":"%s","clientMessageId":"x","body":"sneaky"}""".formatted(conversationId), true);
 
-        String reply = malloryFrames.poll(10, TimeUnit.SECONDS);
+        String reply = next(malloryFrames);
         assertThat((String) JsonPath.read(reply, "$.type")).isEqualTo("ERROR");
     }
 
@@ -156,5 +156,15 @@ class ChatFlowIntegrationTest {
                             }
                         })
                 .join();
+    }
+
+    /** Next frame that is not a PRESENCE notification (those arrive whenever a contact connects). */
+    private static String next(BlockingQueue<String> frames) throws InterruptedException {
+        while (true) {
+            String frame = frames.poll(10, TimeUnit.SECONDS);
+            if (frame == null || !frame.contains("\"type\":\"PRESENCE\"")) {
+                return frame;
+            }
+        }
     }
 }

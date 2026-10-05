@@ -126,16 +126,46 @@ class MultiNodeIntegrationTest {
 
         // alice (node A) -> bob (node B): stored by A, forwarded over gRPC to B, pushed to bob
         aliceSocket.sendText(send(conversationId, "a-1", "hello across nodes"), true);
-        assertThat(type(aliceFrames.poll(10, TimeUnit.SECONDS))).isEqualTo("ACK");
-        String atBob = bobFrames.poll(10, TimeUnit.SECONDS);
+        assertThat(type(next(aliceFrames))).isEqualTo("ACK");
+        String atBob = next(bobFrames);
         assertThat(type(atBob)).isEqualTo("MESSAGE");
         assertThat((String) JsonPath.read(atBob, "$.message.body")).isEqualTo("hello across nodes");
 
+        // bob's node reported delivery in the gRPC response -> alice gets DELIVERED (second tick)
+        String delivered = next(aliceFrames);
+        assertThat(type(delivered)).isEqualTo("RECEIPT");
+        assertThat((String) JsonPath.read(delivered, "$.receipt.status")).isEqualTo("DELIVERED");
+        String firstMessageId = JsonPath.read(atBob, "$.message.messageId");
+
+        // bob reads it on node B -> READ receipt crosses back to alice on node A (blue ticks)
+        bobSocket.sendText(frameJson("READ", conversationId, "\"messageId\":\"" + firstMessageId + "\""), true);
+        String read = next(aliceFrames);
+        assertThat(type(read)).isEqualTo("RECEIPT");
+        assertThat((String) JsonPath.read(read, "$.receipt.status")).isEqualTo("READ");
+
+        // typing indicator crosses nodes too (ephemeral, never stored)
+        bobSocket.sendText(frameJson("TYPING", conversationId, "\"typing\":true"), true);
+        String typing = next(aliceFrames);
+        assertThat(type(typing)).isEqualTo("TYPING");
+        assertThat((Boolean) JsonPath.read(typing, "$.typing.typing")).isTrue();
+
         // and back: bob (node B) -> alice (node A)
         bobSocket.sendText(send(conversationId, "b-1", "got it"), true);
-        assertThat(type(bobFrames.poll(10, TimeUnit.SECONDS))).isEqualTo("ACK");
-        String atAlice = aliceFrames.poll(10, TimeUnit.SECONDS);
+        assertThat(type(next(bobFrames))).isEqualTo("ACK");
+        String atAlice = next(aliceFrames);
         assertThat((String) JsonPath.read(atAlice, "$.message.body")).isEqualTo("got it");
+
+        // presence: ask node A about bob (owned by node B) -> answered via gRPC GetPresence
+        String presence = nodeA.rest().get().uri("/api/v1/presence?userIds=" + bob)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token(alice)).retrieve().body(String.class);
+        assertThat((Boolean) JsonPath.read(presence, "$[0].online")).isTrue();
+
+        // alice's inbox shows the stored read state: bob read up to the first message,
+        // and bob's "got it" is unread for alice
+        String inbox = nodeA.rest().get().uri("/api/v1/conversations")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token(alice)).retrieve().body(String.class);
+        assertThat((String) JsonPath.read(inbox, "$[0].peerLastReadMessageId")).isEqualTo(firstMessageId);
+        assertThat((Boolean) JsonPath.read(inbox, "$[0].unread")).isTrue();
 
         // node B leaves cleanly: it deletes its membership row, node A's ring shrinks,
         // and bob is now owned by node A
@@ -214,6 +244,10 @@ class MultiNodeIntegrationTest {
                 .formatted(conversationId, clientMessageId, body);
     }
 
+    private static String frameJson(String type, String conversationId, String extraField) {
+        return "{\"type\":\"" + type + "\",\"conversationId\":\"" + conversationId + "\"," + extraField + "}";
+    }
+
     private static String type(String frame) {
         assertThat(frame).as("expected a frame but timed out").isNotNull();
         return JsonPath.read(frame, "$.type");
@@ -232,6 +266,16 @@ class MultiNodeIntegrationTest {
     private static int freePort() throws Exception {
         try (ServerSocket socket = new ServerSocket(0)) {
             return socket.getLocalPort();
+        }
+    }
+
+    /** Next frame that is not a PRESENCE notification (those arrive whenever a contact connects). */
+    private static String next(BlockingQueue<String> frames) throws InterruptedException {
+        while (true) {
+            String frame = frames.poll(10, TimeUnit.SECONDS);
+            if (frame == null || !frame.contains("\"type\":\"PRESENCE\"")) {
+                return frame;
+            }
         }
     }
 }

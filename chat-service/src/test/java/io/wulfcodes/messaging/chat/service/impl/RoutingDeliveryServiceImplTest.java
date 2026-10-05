@@ -4,7 +4,7 @@ import io.wulfcodes.messaging.chat.model.dto.response.MessageResponse;
 import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
 import io.wulfcodes.messaging.chat.model.vo.NodeInfo;
 import io.wulfcodes.messaging.chat.service.spec.LocalDeliveryService;
-import io.wulfcodes.messaging.chat.service.spec.NodeForwarder;
+import io.wulfcodes.messaging.chat.service.spec.PeerNodeClient;
 import io.wulfcodes.messaging.chat.service.spec.RingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +16,7 @@ import java.time.Instant;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,13 +34,13 @@ class RoutingDeliveryServiceImplTest {
     @Mock
     private LocalDeliveryService localDeliveryService;
     @Mock
-    private NodeForwarder nodeForwarder;
+    private PeerNodeClient peerNodeClient;
 
     private RoutingDeliveryServiceImpl routing;
 
     @BeforeEach
     void setUp() {
-        routing = new RoutingDeliveryServiceImpl(ringService, localDeliveryService, nodeForwarder);
+        routing = new RoutingDeliveryServiceImpl(ringService, localDeliveryService, peerNodeClient);
         when(ringService.localNode()).thenReturn(SELF);
     }
 
@@ -50,7 +51,7 @@ class RoutingDeliveryServiceImplTest {
         routing.deliver("BOB", ServerFrame.message(MESSAGE), null);
 
         verify(localDeliveryService).deliverLocally("BOB", ServerFrame.message(MESSAGE), null);
-        verify(nodeForwarder, never()).forward(any(), anyString(), any(), any());
+        verify(peerNodeClient, never()).forward(any(), anyString(), any(), any(), any());
     }
 
     @Test
@@ -59,7 +60,7 @@ class RoutingDeliveryServiceImplTest {
 
         routing.deliver("BOB", ServerFrame.message(MESSAGE), "s-9");
 
-        verify(nodeForwarder).forward(OTHER, "BOB", MESSAGE, "s-9");
+        verify(peerNodeClient).forward(eq(OTHER), eq("BOB"), eq(ServerFrame.message(MESSAGE)), eq("s-9"), any());
         verify(localDeliveryService, never()).deliverLocally(anyString(), any(), any());
     }
 }

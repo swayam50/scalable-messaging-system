@@ -42,7 +42,7 @@ public record ChatProperties(
                           Duration refreshInterval, int virtualNodes, String secret) {
     }
 
-    public record Cassandra(String keyspace, boolean initSchema, String schemaLocation) {
+    public record Cassandra(String keyspace, boolean initSchema, List<String> schemaLocations) {
     }
 
     public record History(int maxPageSize) {

@@ -10,11 +10,15 @@ import java.util.Set;
  */
 public interface SessionRegistry {
 
-    void register(String userId, WebSocketSession session);
+    /** @return true if this is the user's first session on this node (user just came online) */
+    boolean register(String userId, WebSocketSession session);
 
-    void unregister(String userId, WebSocketSession session);
+    /** @return true if that was the user's last session on this node (user just went offline) */
+    boolean unregister(String userId, WebSocketSession session);
 
     Collection<WebSocketSession> sessionsOf(String userId);
+
+    boolean isConnected(String userId);
 
     Set<String> connectedUserIds();
 

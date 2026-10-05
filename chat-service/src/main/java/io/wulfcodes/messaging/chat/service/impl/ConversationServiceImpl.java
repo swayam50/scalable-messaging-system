@@ -20,7 +20,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 
@@ -34,6 +37,17 @@ public class ConversationServiceImpl implements ConversationService {
     private final MessageMapper messageMapper;
     private final UlidGenerator ulidGenerator;
     private final Clock clock;
+
+    /** Bounded LRU cache of conversations (immutable participant sets). */
+    private final Map<String, Conversation> participantCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(1024, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Conversation> eldest) {
+                    return size() > PARTICIPANT_CACHE_SIZE;
+                }
+            });
+
+    private static final int PARTICIPANT_CACHE_SIZE = 10_000;
 
     @Override
     public ConversationResponse getOrCreateDirect(String userId, String peerId) {
@@ -79,18 +93,31 @@ public class ConversationServiceImpl implements ConversationService {
         return inboxRepository.findByKeyUserId(userId).stream()
                 .sorted(Comparator.comparing(InboxEntry::getLastMessageId,
                         Comparator.nullsLast(Comparator.reverseOrder())))
-                .map(messageMapper::toInboxResponse)
+                .map(entry -> messageMapper.toInboxResponse(entry, userId))
                 .toList();
     }
 
+    /**
+     * Called for every SEND / READ / TYPING frame. A conversation's participants never change,
+     * so it is cached after the first load and later checks cost no database round trip.
+     */
     @Override
     public Conversation requireParticipant(String conversationId, String userId) {
-        Conversation conversation = conversationRepository.findById(conversationId)
-                .orElseThrow(() -> new ConversationNotFoundException(conversationId));
+        Conversation conversation = participantCache.get(conversationId);
+        if (conversation == null) {
+            conversation = conversationRepository.findById(conversationId)
+                    .orElseThrow(() -> new ConversationNotFoundException(conversationId));
+            participantCache.put(conversationId, conversation);
+        }
         if (!conversation.hasParticipant(userId)) {
             throw new ConversationNotFoundException(conversationId);
         }
         return conversation;
+    }
+
+    @Override
+    public List<String> contactsOf(String userId) {
+        return inboxRepository.findByKeyUserId(userId).stream().map(InboxEntry::getPeerId).distinct().toList();
     }
 
     private Conversation load(String conversationId) {

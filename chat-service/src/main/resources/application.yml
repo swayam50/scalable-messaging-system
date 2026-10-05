@@ -35,7 +35,9 @@ chat:
   cassandra:
     keyspace: chat
     init-schema: ${SCYLLA_INIT_SCHEMA:true}
-    schema-location: classpath:cql/V1__schema.cql
+    schema-locations:            # applied in order at startup
+      - classpath:cql/V1__schema.cql
+      - classpath:cql/V2__receipts_presence.cql
   history:
     max-page-size: 100
   auth:

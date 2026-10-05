@@ -107,12 +107,14 @@ class ConversationServiceImplTest {
     @Test
     void inboxIsSortedNewestFirstWithEmptyConversationsLast() {
         when(inboxRepository.findByKeyUserId("A")).thenReturn(List.of(
-                new InboxEntry(new InboxKey("A", "old"), "X", 100L, "X", "old msg"),
-                new InboxEntry(new InboxKey("A", "empty"), "Y", null, null, null),
-                new InboxEntry(new InboxKey("A", "new"), "Z", 900L, "A", "new msg")));
+                new InboxEntry(new InboxKey("A", "old"), "X", 100L, "X", "old msg", null, null),
+                new InboxEntry(new InboxKey("A", "empty"), "Y", null, null, null, null, null),
+                new InboxEntry(new InboxKey("A", "new"), "Z", 900L, "A", "new msg", 900L, null)));
 
         List<InboxEntryResponse> inbox = service.getInbox("A");
 
         assertThat(inbox).extracting(InboxEntryResponse::conversationId).containsExactly("new", "old", "empty");
+        // "old": last message from X, never read -> unread; "new": my own message -> read
+        assertThat(inbox).extracting(InboxEntryResponse::unread).containsExactly(false, true, false);
     }
 }

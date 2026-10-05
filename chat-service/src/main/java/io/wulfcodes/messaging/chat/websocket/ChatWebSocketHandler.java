@@ -1,11 +1,8 @@
 package io.wulfcodes.messaging.chat.websocket;
 
-import io.wulfcodes.messaging.chat.exception.ApiException;
 import io.wulfcodes.messaging.chat.model.dto.request.ClientFrame;
-import io.wulfcodes.messaging.chat.model.dto.response.MessageResponse;
 import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
-import io.wulfcodes.messaging.chat.model.vo.FrameType;
-import io.wulfcodes.messaging.chat.service.spec.MessageService;
+import io.wulfcodes.messaging.chat.service.spec.PresenceService;
 import io.wulfcodes.messaging.chat.service.spec.SessionRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,8 +18,8 @@ import tools.jackson.databind.json.JsonMapper;
 import java.io.IOException;
 
 /**
- * WebSocket entry point (the WebSocket equivalent of a controller): parses frames,
- * delegates to the service layer, and writes ACK / ERROR frames back.
+ * WebSocket entry point: connection lifecycle (registry + presence) and frame parsing.
+ * What to do with each frame type is decided by {@link FrameDispatcher} and its handlers.
  */
 @Slf4j
 @Component
@@ -33,8 +30,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private static final int SEND_TIME_LIMIT_MS = 10_000;
     private static final int BUFFER_SIZE_LIMIT_BYTES = 512 * 1024;
 
-    private final MessageService messageService;
+    private final FrameDispatcher frameDispatcher;
     private final SessionRegistry sessionRegistry;
+    private final PresenceService presenceService;
     private final JsonMapper jsonMapper;
 
     @Override
@@ -43,9 +41,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         // (e.g. this user's own ACK and a message from someone else arriving at the same time).
         WebSocketSession safe = new ConcurrentWebSocketSessionDecorator(session, SEND_TIME_LIMIT_MS, BUFFER_SIZE_LIMIT_BYTES);
         session.getAttributes().put(SAFE_SESSION, safe);
-        sessionRegistry.register(userId(session), safe);
-        log.debug("User {} connected (session {}), {} connections on this node",
-                userId(session), session.getId(), sessionRegistry.connectionCount());
+        if (sessionRegistry.register(userId(session), safe)) {
+            presenceService.userConnected(userId(session));
+        }
     }
 
     @Override
@@ -57,23 +55,15 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             reply(session, ServerFrame.error(null, "Malformed frame"));
             return;
         }
-
-        if (frame.type() != FrameType.SEND) {
-            reply(session, ServerFrame.error(frame.clientMessageId(), "Unsupported frame type: " + frame.type()));
-            return;
-        }
-
-        try {
-            MessageResponse stored = messageService.send(userId(session), frame, session.getId());
-            reply(session, ServerFrame.ack(stored));
-        } catch (ApiException e) {
-            reply(session, ServerFrame.error(frame.clientMessageId(), e.getMessage()));
-        }
+        frameDispatcher.dispatch(new ConnectionContext(userId(session), session.getId(), f -> reply(session, f)), frame);
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        sessionRegistry.unregister(userId(session), safeSession(session));
+        if (sessionRegistry.unregister(userId(session), safeSession(session))) {
+            boolean movingNodes = status.getCode() == ConnectionRebalancer.OWNER_CHANGED.getCode();
+            presenceService.userDisconnected(userId(session), movingNodes);
+        }
     }
 
     @Override

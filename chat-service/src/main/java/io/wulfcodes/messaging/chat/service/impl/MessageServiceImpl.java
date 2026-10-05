@@ -17,6 +17,7 @@ import io.wulfcodes.messaging.chat.repository.MessageRepository;
 import io.wulfcodes.messaging.chat.service.spec.ConversationService;
 import io.wulfcodes.messaging.chat.service.spec.DeliveryService;
 import io.wulfcodes.messaging.chat.service.spec.MessageService;
+import io.wulfcodes.messaging.chat.service.spec.ReceiptService;
 import io.wulfcodes.messaging.chat.util.BucketUtil;
 import io.wulfcodes.messaging.common.model.vo.SnowflakeId;
 import io.wulfcodes.messaging.common.util.IdGenerator;
@@ -26,6 +27,7 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 @Service
 @RequiredArgsConstructor
@@ -37,13 +39,15 @@ public class MessageServiceImpl implements MessageService {
     private final InboxRepository inboxRepository;
     private final ConversationService conversationService;
     private final DeliveryService deliveryService;
+    private final ReceiptService receiptService;
     private final MessageMapper messageMapper;
     private final IdGenerator idGenerator;
     private final ChatProperties properties;
     private final Clock clock;
 
     @Override
-    public MessageResponse send(String senderId, ClientFrame frame, String originSessionId) {
+    public MessageResponse send(String senderId, ClientFrame frame, String originSessionId,
+                                Consumer<MessageResponse> onStored) {
         validate(frame);
         Conversation conversation = conversationService.requireParticipant(frame.conversationId(), senderId);
 
@@ -59,8 +63,16 @@ public class MessageServiceImpl implements MessageService {
         updateInboxes(conversation.getConversationId(), senderId, recipientId, message);
 
         MessageResponse response = messageMapper.toResponse(message);
+        onStored.accept(response);   // ACK first: the message is durable from here on
+
         ServerFrame messageFrame = ServerFrame.message(response);
-        deliveryService.deliver(recipientId, messageFrame, null);
+        // Recipient: once at least one of their sessions got it (possibly on another node, reported
+        // back in the gRPC response), the sender gets a DELIVERED receipt (second tick).
+        deliveryService.deliver(recipientId, messageFrame, null, delivered -> {
+            if (delivered > 0) {
+                receiptService.notifyDelivered(response, recipientId);
+            }
+        });
         deliveryService.deliver(senderId, messageFrame, originSessionId);   // sender's other tabs
         return response;
     }
@@ -102,6 +114,8 @@ public class MessageServiceImpl implements MessageService {
                     .lastMessageId(messageId)
                     .lastSenderId(senderId)
                     .preview(preview)
+                    // you have obviously read your own message (null = column left untouched)
+                    .lastReadMessageId(owner.equals(senderId) ? messageId : null)
                     .build(), writeTimeMicros);
         }
     }
