@@ -77,6 +77,21 @@ services:
       auth-service:
         condition: service_started
 
+  messaging-ui:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: messaging-ui/Dockerfile
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8081      # server-to-server (inside the compose network)
+      CHAT_API_URL: http://localhost:8082             # used by the browser
+      CHAT_WS_URL: ws://localhost:8082/ws/chat        # used by the browser
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth-service:
+        condition: service_started
+
 volumes:
   postgres-data:
   scylla-data:

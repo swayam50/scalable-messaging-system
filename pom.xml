@@ -23,6 +23,7 @@
         <module>messaging-common</module>
         <module>auth-service</module>
         <module>chat-service</module>
+        <module>messaging-ui</module>
     </modules>
 
     <properties>

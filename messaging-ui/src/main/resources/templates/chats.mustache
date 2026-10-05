@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  {{> partials/head}}
+  <title>Chats · Messaging</title>
+</head>
+<body>
+<div class="app"
+     id="app"
+     data-me-id="{{me.id}}"
+     data-chat-api="{{chatApiUrl}}"
+     data-chat-ws="{{chatWsUrl}}">
+
+  <aside class="sidebar">
+    <header class="sidebar-header">
+      <div>
+        <strong>{{me.displayName}}</strong>
+        <div class="muted small">@{{me.username}} · <span id="connection" class="status">connecting…</span></div>
+      </div>
+      <form method="post" action="/logout"><button class="link" type="submit">Log out</button></form>
+    </header>
+
+    <div class="search">
+      <input id="search" placeholder="Find people by username…" autocomplete="off">
+      <ul id="search-results" class="list"></ul>
+    </div>
+
+    <ul id="inbox" class="list inbox"></ul>
+  </aside>
+
+  <section class="conversation" id="conversation">
+    <div class="empty" id="empty-state">Select a chat or search for someone to start one.</div>
+
+    <header class="conversation-header hidden" id="conversation-header">
+      <strong id="peer-name"></strong>
+    </header>
+
+    <div class="messages hidden" id="messages">
+      <button class="link load-older hidden" id="load-older">Load older messages</button>
+      <ol id="message-list"></ol>
+    </div>
+
+    <form class="composer hidden" id="composer" autocomplete="off">
+      <input id="message-input" placeholder="Type a message" maxlength="4000">
+      <button type="submit">Send</button>
+    </form>
+  </section>
+</div>
+<script src="/js/chat.js"></script>
+</body>
+</html>

@@ -27,15 +27,12 @@ cp .env.example .env          # adjust credentials
 docker compose up -d          # PostgreSQL + ScyllaDB
 ./mvnw verify                 # build + all tests
 ```
-Run auth-service in Docker as well:
+Run the whole stack in Docker, then open **http://localhost:8080**:
 ```bash
 docker compose --profile app up -d --build
 ```
-
-Apply the ScyllaDB schema (automated in a later milestone):
-```bash
-docker compose exec -T scylla cqlsh < chat-service/src/main/resources/cql/V1__schema.cql
-```
+Register two users in two browsers (or one normal and one private window) and chat.
+chat-service applies its ScyllaDB schema at startup; the script is idempotent.
 
 ## auth-service API (v1)
 | Method | Path | Auth | Purpose |
@@ -56,6 +53,43 @@ docker compose exec -T scylla cqlsh < chat-service/src/main/resources/cql/V1__sc
 - **Passwords:** hashed with BCrypt via a delegating encoder. Error messages are generic, and the timing is the same whether or not the user exists.
 - **Errors:** returned as RFC 9457 `application/problem+json`. API versioning uses Spring Framework 7's built-in support.
 
+## chat-service
+**WebSocket** `ws://host:8082/ws/chat?access_token=<JWT>`. The handshake is refused with 401 unless the JWT verifies against auth-service's JWKS.
+
+| Frame | Direction | Example |
+|---|---|---|
+| `SEND` | client → server | `{"type":"SEND","conversationId":"01J…","clientMessageId":"c-1","body":"hi"}` |
+| `ACK` | server → sender | stored message + echoed `clientMessageId` |
+| `MESSAGE` | server → participants | new message (recipient + sender's other tabs) |
+| `ERROR` | server → client | validation / permission errors |
+
+**REST v1 (Bearer):**
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/conversations` | Inbox, most recently active first |
+| POST | `/api/v1/conversations` `{"peerId"}` | Get or create a 1:1 conversation (idempotent) |
+| GET | `/api/v1/conversations/{id}/messages?before=&limit=` | History, newest first, cursor-paged |
+
+**ScyllaDB data model (query-first):**
+- `messages_by_conversation ((conversation_id, day_bucket), message_id DESC)`
+  - Each read is a single-partition range scan.
+  - The day bucket keeps partitions bounded, and paging walks back one bucket at a time.
+- `direct_conversations ((user_low, user_high))`
+  - Written with `INSERT … IF NOT EXISTS` (a lightweight transaction).
+  - Two users starting a chat at the same moment get exactly one conversation.
+- `conversations_by_user (user_id, conversation_id)`
+  - Written `USING TIMESTAMP` = the message's Snowflake time, so a delayed older write can never overwrite a newer "last message".
+- `cluster_members`: TTL heartbeats for the hash ring (milestone 4).
+
+Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbers lose precision above 2^53.
+
+## messaging-ui (BFF)
+- **Login and registration happen on the server.** The **refresh token never reaches the browser.** It lives in the server-side HttpSession, behind an `HttpOnly` + `SameSite=Lax` cookie, and session ids never appear in URLs.
+- **The page gets only the short-lived access token** (`POST /api/v1/session/token`, same origin). It uses it to talk to chat-service directly.
+- **Token refresh is synchronized per session.** Several tabs share one session, so a parallel refresh would replay the same single-use refresh token, which auth-service treats as theft.
+- **User search and lookup are proxied through the UI**, so auth-service is never exposed to browser traffic and needs no CORS.
+- All user content is rendered with `textContent` and Mustache escaping, so it can't inject HTML or scripts (XSS).
+
 ## IDs
 **Snowflake (64-bit, message IDs)**
 ```
@@ -75,6 +109,7 @@ docker compose exec -T scylla cqlsh < chat-service/src/main/resources/cql/V1__sc
 ## Project conventions
 - Layered packaging under `io.wulfcodes.messaging.<module>`:
   - `controller` (MVC) and `controller.resource.v1` (versioned REST)
+  - `websocket` (WebSocket handlers and handshake interceptors)
   - `service.spec` (interfaces) and `service.impl` (implementations)
   - `repository`
   - `model.po` / `model.po.eo` / `model.dto` / `model.vo`
@@ -84,6 +119,6 @@ docker compose exec -T scylla cqlsh < chat-service/src/main/resources/cql/V1__sc
 ## Roadmap
 1. ✅ Foundation: ID generators, compose, schema
 2. ✅ auth-service
-3. ⏳ Single-node chat + UI
-4. Multi-node: hash ring + gRPC forwarding
+3. ✅ Single-node chat + UI
+4. ⏳ Multi-node: hash ring + gRPC forwarding
 5. Receipts, presence, offline sync, load test, CI

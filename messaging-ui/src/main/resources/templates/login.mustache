@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  {{> partials/head}}
+  <title>Sign in · Messaging</title>
+</head>
+<body class="auth-page">
+  <main class="card">
+    <h1>Messaging</h1>
+    <p class="muted">Sign in to continue</p>
+    {{#error}}<p class="alert">{{error}}</p>{{/error}}
+    <form method="post" action="/login">
+      <label>Username or email
+        <input name="login" value="{{login}}" autocomplete="username" required autofocus>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+    <p class="muted">No account? <a href="/register">Create one</a></p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  {{> partials/head}}
+  <title>Create account · Messaging</title>
+</head>
+<body class="auth-page">
+  <main class="card">
+    <h1>Create account</h1>
+    {{#error}}<p class="alert">{{error}}</p>{{/error}}
+    <form method="post" action="/register">
+      <label>Username
+        <input name="username" value="{{#form}}{{username}}{{/form}}" minlength="3" maxlength="32"
+               pattern="[a-zA-Z0-9_.]+" title="Letters, digits, '_' and '.'" required autofocus>
+      </label>
+      <label>Display name
+        <input name="displayName" value="{{#form}}{{displayName}}{{/form}}" maxlength="64" required>
+      </label>
+      <label>Email
+        <input name="email" type="email" value="{{#form}}{{email}}{{/form}}" required>
+      </label>
+      <label>Password
+        <input name="password" type="password" minlength="8" maxlength="72" autocomplete="new-password" required>
+      </label>
+      <button type="submit">Create account</button>
+    </form>
+    <p class="muted">Already registered? <a href="/login">Sign in</a></p>
+  </main>
+</body>
+</html>
