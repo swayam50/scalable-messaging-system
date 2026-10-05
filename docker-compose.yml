@@ -58,13 +58,20 @@ services:
       postgres:
         condition: service_healthy
 
-  chat-service:
+  # Three chat nodes forming one consistent-hash ring. Each needs a unique node id,
+  # Snowflake worker id, and the addresses peers (gRPC) and browsers (WebSocket) use to reach it.
+  chat-service-1: &chat-node
     profiles: ["app"]
     build:
       context: .
       dockerfile: chat-service/Dockerfile
-    environment:
-      CHAT_WORKER_ID: "1"                       # Snowflake worker id: unique per chat node
+    image: messaging-system-chat-service
+    environment: &chat-env
+      CHAT_NODE_ID: chat-1
+      CHAT_WORKER_ID: "1"
+      CHAT_GRPC_ADDRESS: chat-service-1:9090
+      CHAT_WS_URL: ws://localhost:8082/ws/chat
+      CHAT_CLUSTER_SECRET: ${CHAT_CLUSTER_SECRET:-local-dev-cluster-secret}
       SCYLLA_CONTACT_POINTS: scylla:9042
       AUTH_JWKS_URI: http://auth-service:8081/.well-known/jwks.json
       AUTH_ISSUER: http://auth-service:8081     # must match auth-service's JWT_ISSUER
@@ -77,6 +84,30 @@ services:
       auth-service:
         condition: service_started
 
+  chat-service-2:
+    <<: *chat-node
+    build: !reset null
+    environment:
+      <<: *chat-env
+      CHAT_NODE_ID: chat-2
+      CHAT_WORKER_ID: "2"
+      CHAT_GRPC_ADDRESS: chat-service-2:9090
+      CHAT_WS_URL: ws://localhost:8083/ws/chat
+    ports:
+      - "8083:8082"
+
+  chat-service-3:
+    <<: *chat-node
+    build: !reset null
+    environment:
+      <<: *chat-env
+      CHAT_NODE_ID: chat-3
+      CHAT_WORKER_ID: "3"
+      CHAT_GRPC_ADDRESS: chat-service-3:9090
+      CHAT_WS_URL: ws://localhost:8084/ws/chat
+    ports:
+      - "8084:8082"
+
   messaging-ui:
     profiles: ["app"]
     build:
@@ -84,8 +115,7 @@ services:
       dockerfile: messaging-ui/Dockerfile
     environment:
       AUTH_SERVICE_URL: http://auth-service:8081      # server-to-server (inside the compose network)
-      CHAT_API_URL: http://localhost:8082             # used by the browser
-      CHAT_WS_URL: ws://localhost:8082/ws/chat        # used by the browser
+      CHAT_API_URLS: http://localhost:8082,http://localhost:8083,http://localhost:8084   # browser-facing; client fails over
     ports:
       - "8080:8080"
     depends_on:

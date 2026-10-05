@@ -14,8 +14,23 @@ spring:
       connect-timeout: 10s
       init-query-timeout: 10s
 
+  grpc:
+    server:
+      port: ${CHAT_GRPC_PORT:9090}
+
 chat:
   worker-id: ${CHAT_WORKER_ID:1}
+  node:
+    id: ${CHAT_NODE_ID:chat-1}
+    grpc-address: ${CHAT_GRPC_ADDRESS:localhost:9090}
+    ws-url: ${CHAT_WS_URL:ws://localhost:8082/ws/chat}
+  cluster:
+    name: ${CHAT_CLUSTER:chat}
+    heartbeat-interval: 5s
+    member-ttl: 15s
+    refresh-interval: 2s
+    virtual-nodes: 128
+    secret: ${CHAT_CLUSTER_SECRET:local-dev-cluster-secret}
   max-message-length: 4000
   cassandra:
     keyspace: chat
@@ -25,6 +40,7 @@ chat:
     max-page-size: 100
   auth:
     jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
+    public-key: ${AUTH_PUBLIC_KEY:}
     issuer: ${AUTH_ISSUER:http://localhost:8081}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:8080}

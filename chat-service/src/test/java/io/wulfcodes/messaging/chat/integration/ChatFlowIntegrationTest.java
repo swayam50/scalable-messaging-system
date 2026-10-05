@@ -53,6 +53,7 @@ class ChatFlowIntegrationTest {
                 () -> SCYLLA.getContactPoint().getHostString() + ":" + SCYLLA.getContactPoint().getPort());
         registry.add("spring.cassandra.local-datacenter", () -> "datacenter1");
         registry.add("spring.cassandra.request.timeout", () -> "15s");
+        registry.add("spring.grpc.server.port", () -> "0");   // single node: no peers to call
     }
 
     @MockitoBean

@@ -11,7 +11,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 
 /**
  * The chat page. It renders the shell; chat.js then talks to chat-service directly
- * (WebSocket + REST) with the short-lived access token it gets from /api/v1/session/token.
+ * (WebSocket + REST) with the short-lived access token it gets from /api/v1/session/token,
+ * asking chat-service which node to open the WebSocket on.
  */
 @Controller
 @RequiredArgsConstructor
@@ -32,8 +33,7 @@ public class ChatPageController {
             return "redirect:/login";
         }
         model.addAttribute("me", tokens.user());
-        model.addAttribute("chatApiUrl", properties.chatApiUrl());
-        model.addAttribute("chatWsUrl", properties.chatWsUrl());
+        model.addAttribute("chatApiUrls", String.join(",", properties.chatApiUrls()));
         return "chats";
     }
 }

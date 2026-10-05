@@ -3,9 +3,9 @@ package io.wulfcodes.messaging.chat.service.spec;
 import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
 
 /**
- * Delivers frames to a user's connected sessions.
- * Single node: local sessions only. Milestone 4 adds a routing implementation that looks up the
- * user's owner node on the consistent-hash ring and forwards over gRPC when it is another node.
+ * Delivers frames to a user's connected sessions, wherever in the cluster they are:
+ * looks up the user's owner node on the consistent-hash ring and either writes to local
+ * sessions or forwards to the owner over gRPC.
  */
 public interface DeliveryService {
 

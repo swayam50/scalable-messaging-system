@@ -19,7 +19,7 @@ A WhatsApp-style chat backend built to scale horizontally:
 | `messaging-ui` | Login and chat pages (Mustache + vanilla JS WebSocket) | — |
 
 ## Stack
-Java 25 · Spring Boot 4.1 · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
+Java 25 · Spring Boot 4.1 · Spring gRPC · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
 
 ## Run locally
 ```bash
@@ -31,7 +31,10 @@ Run the whole stack in Docker, then open **http://localhost:8080**:
 ```bash
 docker compose --profile app up -d --build
 ```
-Register two users in two browsers (or one normal and one private window) and chat.
+This starts PostgreSQL, ScyllaDB, auth-service, **three chat-service nodes** (8082–8084) and the UI.
+Register two users in two browsers (or one normal and one private window) and chat. The status line
+shows which node each user is connected to. Stop one node (`docker compose stop chat-service-1`) and
+watch its users reconnect to their new owner.
 chat-service applies its ScyllaDB schema at startup; the script is idempotent.
 
 ## auth-service API (v1)
@@ -69,6 +72,7 @@ chat-service applies its ScyllaDB schema at startup; the script is idempotent.
 | GET | `/api/v1/conversations` | Inbox, most recently active first |
 | POST | `/api/v1/conversations` `{"peerId"}` | Get or create a 1:1 conversation (idempotent) |
 | GET | `/api/v1/conversations/{id}/messages?before=&limit=` | History, newest first, cursor-paged |
+| GET | `/api/v1/connect` | Which node owns the caller (`nodeId`, `wsUrl`) |
 
 **ScyllaDB data model (query-first):**
 - `messages_by_conversation ((conversation_id, day_bucket), message_id DESC)`
@@ -79,9 +83,34 @@ chat-service applies its ScyllaDB schema at startup; the script is idempotent.
   - Two users starting a chat at the same moment get exactly one conversation.
 - `conversations_by_user (user_id, conversation_id)`
   - Written `USING TIMESTAMP` = the message's Snowflake time, so a delayed older write can never overwrite a newer "last message".
-- `cluster_members`: TTL heartbeats for the hash ring (milestone 4).
+- `cluster_nodes (cluster, node_id)`: live nodes, written with TTL heartbeats for the hash ring.
 
 Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbers lose precision above 2^53.
+
+## Cluster: consistent hashing + gRPC
+```
+                 ┌──────────── consistent-hash ring (128 virtual nodes / node) ────────────┐
+ alice ──WS──▶ chat-1 ──gRPC Deliver──▶ chat-2 ◀──WS── bob          chat-3
+                 │  store message (ScyllaDB)        │ push to bob's sockets
+                 └── membership: cluster_nodes rows written USING TTL (heartbeats) ──┘
+```
+- **Membership:** each node upserts its row in `cluster_nodes` every 5s **with a 15s TTL**.
+  - A crashed node's row expires on its own. A clean shutdown deletes the row straight away.
+  - Every node re-reads membership every 2s and rebuilds the same ring.
+  - No ZooKeeper, etcd or Redis is needed.
+- **Ownership:** a user belongs to the first virtual node clockwise from `MD5(userId)`.
+  - Adding a node moves only about 1/N of the users. With `hash % N`, most users would move. Both properties are covered by tests.
+- **Connecting:** the client calls `GET /api/v1/connect`, which any node can answer, and opens its WebSocket on the owner.
+  - A handshake on the wrong node is refused.
+  - When the ring changes, nodes close sockets they no longer own with code **4001**, and those clients reconnect to their new owner.
+- **Delivery:** the node that receives a message stores it, then:
+  - writes it locally if it owns the recipient, or
+  - forwards it with a gRPC `NodeDelivery.Deliver` call (async stub, 2s deadline, one HTTP/2 channel per peer).
+  - A failed forward never fails the send. The message is already stored, so the client gets it from history on reconnect.
+- **Internal security:** the internal gRPC port requires a shared **cluster token**, checked by a server interceptor with a constant-time comparison. Mutual TLS would be the production upgrade.
+- **Snowflake IDs:** each node has its own worker id, so message ids never collide across nodes.
+- **REST failover:** every node serves the full REST API. The UI gets the list of nodes, and the client moves to the next one if a node is down.
+  - A load balancer would usually do this in production.
 
 ## messaging-ui (BFF)
 - **Login and registration happen on the server.** The **refresh token never reaches the browser.** It lives in the server-side HttpSession, behind an `HttpOnly` + `SameSite=Lax` cookie, and session ids never appear in URLs.
@@ -110,6 +139,7 @@ Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbe
 - Layered packaging under `io.wulfcodes.messaging.<module>`:
   - `controller` (MVC) and `controller.resource.v1` (versioned REST)
   - `websocket` (WebSocket handlers and handshake interceptors)
+  - `grpc` (gRPC endpoints and interceptors; generated stubs in `grpc.proto`)
   - `service.spec` (interfaces) and `service.impl` (implementations)
   - `repository`
   - `model.po` / `model.po.eo` / `model.dto` / `model.vo`
@@ -120,5 +150,5 @@ Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbe
 1. ✅ Foundation: ID generators, compose, schema
 2. ✅ auth-service
 3. ✅ Single-node chat + UI
-4. ⏳ Multi-node: hash ring + gRPC forwarding
-5. Receipts, presence, offline sync, load test, CI
+4. ✅ Multi-node: hash ring, TTL membership, gRPC forwarding, rebalancing
+5. ⏳ Receipts, presence, offline sync, load test, CI

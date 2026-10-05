@@ -69,7 +69,7 @@ class MessageServiceImplTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        ChatProperties properties = new ChatProperties(1, 4000, null, new ChatProperties.History(100), null, null);
+        ChatProperties properties = new ChatProperties(1, 4000, null, null, null, new ChatProperties.History(100), null, null);
         messageService = new MessageServiceImpl(messageRepository, inboxRepository, conversationService, deliveryService,
                 messageMapper, new SnowflakeIdGenerator(1, clock), properties, clock);
     }

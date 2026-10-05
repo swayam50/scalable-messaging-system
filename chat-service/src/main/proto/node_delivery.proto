@@ -1,0 +1,32 @@
+// Internal API between chat-service nodes.
+// When a message's recipient is owned by another node (consistent-hash ring),
+// the receiving node forwards it here; the owner pushes it to its local WebSockets.
+syntax = "proto3";
+
+package messaging.chat.v1;
+
+option java_multiple_files = true;
+option java_package = "io.wulfcodes.messaging.chat.grpc.proto";
+
+service NodeDelivery {
+  rpc Deliver (DeliverRequest) returns (DeliverResponse);
+}
+
+message ChatMessage {
+  string message_id = 1;          // Snowflake id as string
+  string conversation_id = 2;
+  string sender_id = 3;
+  string body = 4;
+  int64 sent_at_millis = 5;
+  string client_message_id = 6;
+}
+
+message DeliverRequest {
+  string user_id = 1;             // recipient whose sessions should receive the message
+  ChatMessage message = 2;
+  string exclude_session_id = 3;  // empty = none
+}
+
+message DeliverResponse {
+  int32 delivered_sessions = 1;
+}

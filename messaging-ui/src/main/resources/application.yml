@@ -17,8 +17,7 @@ spring:
 
 ui:
   auth-service-url: ${AUTH_SERVICE_URL:http://localhost:8081}
-  chat-api-url: ${CHAT_API_URL:http://localhost:8082}
-  chat-ws-url: ${CHAT_WS_URL:ws://localhost:8082/ws/chat}
+  chat-api-urls: ${CHAT_API_URLS:http://localhost:8082}   # comma-separated chat nodes
 
 management:
   endpoints:

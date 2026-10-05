@@ -2,6 +2,7 @@ package io.wulfcodes.messaging.chat.websocket;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.wulfcodes.messaging.chat.service.spec.RingService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -32,6 +33,7 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
     static final String TOKEN_PARAM = "access_token";
 
     private final JwtDecoder jwtDecoder;
+    private final RingService ringService;
 
     @Override
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
@@ -44,6 +46,12 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
         }
         try {
             Jwt jwt = jwtDecoder.decode(token);
+            if (!ringService.isLocal(jwt.getSubject())) {
+                // Wrong node: this user is owned by another node. Refuse, so the client asks
+                // /api/v1/connect again; otherwise messages routed to the owner would never reach it.
+                response.setStatusCode(HttpStatus.CONFLICT);
+                return false;
+            }
             attributes.put(USER_ID, jwt.getSubject());
             attributes.put(USERNAME, jwt.getClaimAsString("username"));
             return true;

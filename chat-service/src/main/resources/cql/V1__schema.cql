@@ -46,11 +46,13 @@ CREATE TABLE IF NOT EXISTS chat.conversations_by_user (
   PRIMARY KEY (user_id, conversation_id)
 );
 
--- Live chat-service nodes for the consistent-hash ring (milestone 4).
--- Rows are written with USING TTL 15 every 5s, so a dead node disappears on its own.
-CREATE TABLE IF NOT EXISTS chat.cluster_members (
+-- Live chat-service nodes for the consistent-hash ring.
+-- Each node upserts its row USING TTL every few seconds (heartbeat), so a crashed node's row
+-- expires on its own; a clean shutdown deletes it immediately.
+CREATE TABLE IF NOT EXISTS chat.cluster_nodes (
   cluster      text,
   node_id      text,
-  grpc_address text,
+  grpc_address text,              -- host:port other nodes use to forward messages
+  ws_url       text,              -- WebSocket URL clients use to connect to this node
   PRIMARY KEY (cluster, node_id)
 );

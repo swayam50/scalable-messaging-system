@@ -36,6 +36,11 @@ public class InMemorySessionRegistry implements SessionRegistry {
     }
 
     @Override
+    public Set<String> connectedUserIds() {
+        return Set.copyOf(sessionsByUser.keySet());
+    }
+
+    @Override
     public int connectionCount() {
         return sessionsByUser.values().stream().mapToInt(Set::size).sum();
     }

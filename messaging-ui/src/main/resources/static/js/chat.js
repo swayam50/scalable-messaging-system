@@ -2,6 +2,8 @@
  * Chat client.
  * - Gets a short-lived access token from the UI server (/api/v1/session/token, same origin + session cookie).
  * - Talks to chat-service directly: REST for inbox/history/conversations, WebSocket for live messages.
+ * - Asks chat-service which node owns this user (/api/v1/connect: consistent-hash ring) and opens the
+ *   WebSocket on that node; re-asks on every reconnect, because the owner changes when nodes join/leave.
  * - User names come from the UI server (/api/v1/users), which proxies auth-service.
  * All user content is rendered with textContent (never innerHTML) to prevent XSS.
  */
@@ -10,15 +12,17 @@
 
   const app = document.getElementById('app');
   const ME = app.dataset.meId;
-  const CHAT_API = app.dataset.chatApi;
-  const CHAT_WS = app.dataset.chatWs;
+  const CHAT_APIS = app.dataset.chatApis.split(',').map((url) => url.trim()).filter(Boolean);
+  const OWNER_CHANGED = 4001;   // close code sent by a node that no longer owns this user
 
   const el = (id) => document.getElementById(id);
   const state = {
     token: null,
     tokenExpiresAt: 0,
     socket: null,
+    node: null,
     reconnectDelay: 1000,
+    apiIndex: 0,               // which chat node currently serves our REST calls
     inbox: new Map(),          // conversationId -> inbox entry
     names: new Map(),          // userId -> display name
     current: null,             // { conversationId, peerId, nextBefore }
@@ -41,13 +45,28 @@
     return state.token;
   }
 
+  /**
+   * REST call to chat-service. Every node serves the same API (shared ScyllaDB, same ring),
+   * so if the current node is unreachable we fail over to the next one.
+   */
   async function chatApi(path, options = {}) {
-    const res = await fetch(CHAT_API + path, {
-      ...options,
-      headers: { ...(options.headers || {}), Authorization: 'Bearer ' + await accessToken() },
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
-    return res.json();
+    const token = await accessToken();
+    for (let attempt = 0; attempt < CHAT_APIS.length; attempt++) {
+      const base = CHAT_APIS[state.apiIndex];
+      let res;
+      try {
+        res = await fetch(base + path, {
+          ...options,
+          headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token },
+        });
+      } catch (networkError) {
+        state.apiIndex = (state.apiIndex + 1) % CHAT_APIS.length;   // node down: try the next one
+        continue;
+      }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      return res.json();
+    }
+    throw new Error('No chat node reachable');
   }
 
   async function displayName(userId) {
@@ -63,23 +82,40 @@
   // ---------- WebSocket ----------
   async function connect() {
     setStatus('connecting…', '');
-    const token = await accessToken();
-    const socket = new WebSocket(CHAT_WS + '?access_token=' + encodeURIComponent(token));
+    let socket;
+    try {
+      const owner = await chatApi('/api/v1/connect');   // which node owns me right now?
+      const token = await accessToken();
+      socket = new WebSocket(owner.wsUrl + '?access_token=' + encodeURIComponent(token));
+      state.node = owner.nodeId;
+    } catch (e) {
+      return scheduleReconnect();
+    }
     state.socket = socket;
 
     socket.onopen = () => {
-      setStatus('online', 'online');
+      setStatus('online · ' + state.node, 'online');
       state.reconnectDelay = 1000;
       // We may have missed messages while disconnected: refresh what's on screen.
       loadInbox();
       if (state.current) openConversation(state.current.conversationId, state.current.peerId);
     };
     socket.onmessage = (event) => handleFrame(JSON.parse(event.data));
-    socket.onclose = () => {
-      setStatus('offline – reconnecting', 'offline');
-      setTimeout(connect, state.reconnectDelay);
-      state.reconnectDelay = Math.min(state.reconnectDelay * 2, 30_000);   // exponential backoff
+    socket.onclose = (event) => {
+      if (event.code === OWNER_CHANGED) {
+        // Cluster rebalanced: reconnect to the new owner right away
+        state.reconnectDelay = 1000;
+        setStatus('moving to another node…', '');
+        return connect();
+      }
+      scheduleReconnect();
     };
+  }
+
+  function scheduleReconnect() {
+    setStatus('offline – reconnecting', 'offline');
+    setTimeout(connect, state.reconnectDelay);
+    state.reconnectDelay = Math.min(state.reconnectDelay * 2, 30_000);   // exponential backoff
   }
 
   function handleFrame(frame) {

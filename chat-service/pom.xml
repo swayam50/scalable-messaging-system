@@ -47,6 +47,16 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- gRPC between chat nodes (Spring gRPC, managed by Spring Boot) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-grpc-server</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-grpc-client</artifactId>
+        </dependency>
+
         <!-- ScyllaDB speaks the Cassandra protocol (CQL), so Spring Data Cassandra works as-is -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -98,6 +108,11 @@
 
     <build>
         <plugins>
+            <!-- Generates Java message classes + gRPC stubs from src/main/proto (configured by the Boot parent) -->
+            <plugin>
+                <groupId>io.github.ascopes</groupId>
+                <artifactId>protobuf-maven-plugin</artifactId>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
