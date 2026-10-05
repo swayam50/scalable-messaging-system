@@ -163,6 +163,14 @@ viewer  ──5. GET /api/v1/media/{id}/download ▶ media-service (participants
 - **Ticks:** ✓ means stored, ✓✓ delivered, highlighted ✓✓ read. Read pointers are written `USING TIMESTAMP` = message time, so they only ever move forward.
 - **Presence:** each user's owner node is the source of truth. `/api/v1/presence` asks each owner node over gRPC. Moving between nodes does not show the user as offline.
 
+## CI (GitHub Actions)
+The workflow is `.github/workflows/ci.yml`. It is **manual only**: no push or pull-request triggers, so it never runs on a commit by itself.
+- **Run it:** from the GitHub **Actions** tab → **CI** → **Run workflow**, or with `gh workflow run ci.yml -f tests=all -f build-images=false`.
+- **Inputs:**
+  - `tests`: `all` runs unit tests plus Testcontainers integration tests on the runner's Docker (ScyllaDB, PostgreSQL, SeaweedFS). `unit-only` skips `*IntegrationTest`: about 80 tests in under a minute, no Docker needed.
+  - `build-images`: also builds every service's Docker image in a matrix, with layer caching and no push.
+- **Output:** a per-module test summary on the run page, with the Surefire reports uploaded as an artifact. Runs on the same branch cancel each other, so only the latest one runs.
+
 ## Performance
 Load-tested with the `load-test` module: real JWTs, real WebSockets, and an open-loop send rate. Full tables and method are in [load-test/RESULTS.md](load-test/RESULTS.md).
 - **Setup:** all on one 12-core laptop (3 chat nodes + ScyllaDB + PostgreSQL + SeaweedFS + the load generator), with **2,000 concurrent WebSockets**. About 2/3 of conversations span two nodes, so their messages go over gRPC.
@@ -205,4 +213,4 @@ Load-tested with the `load-test` module: real JWTs, real WebSockets, and an open
 5. ✅ Receipts, typing, presence, offline sync
 6. ✅ Media messages (image, video, audio, file)
 7. ✅ Load test (see Performance)
-8. ⏳ CI (GitHub Actions)
+8. ✅ CI (GitHub Actions, manually triggered)

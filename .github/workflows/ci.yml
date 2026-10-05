@@ -1,0 +1,97 @@
+# Manual CI: runs only when triggered (Actions tab -> "CI" -> "Run workflow", or `gh workflow run ci.yml`).
+# Intentionally no push / pull_request triggers.
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Which tests to run
+        type: choice
+        options:
+          - all                 # unit + Testcontainers integration tests (ScyllaDB, PostgreSQL, SeaweedFS)
+          - unit-only           # skips *IntegrationTest classes: fast, no Docker needed
+        default: all
+      build-images:
+        description: Also build the Docker image of every service (not pushed anywhere)
+        type: boolean
+        default: false
+
+# One run per branch at a time; a new manual run cancels an older one still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & test (${{ inputs.tests }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven                # caches ~/.m2 keyed by the pom.xml files
+
+      - name: Build and test
+        run: |
+          if [ "${{ inputs.tests }}" = "unit-only" ]; then
+            ./mvnw -B verify -Dtest='!*IntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
+          else
+            ./mvnw -B verify          # Testcontainers uses the runner's Docker daemon
+          fi
+
+      - name: Test report summary
+        if: always()
+        run: |
+          {
+            echo "### Test results"
+            echo "| Module | Tests | Failures | Errors |"
+            echo "|---|---|---|---|"
+            for dir in */target/surefire-reports; do
+              [ -d "$dir" ] || continue
+              module=${dir%%/*}
+              totals=$(cat "$dir"/*.txt 2>/dev/null | grep -h "Tests run" | awk -F'[ ,]+' '{t+=$3; f+=$5; e+=$7} END {printf "%d | %d | %d", t, f, e}')
+              echo "| $module | $totals |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surefire-reports
+          path: '*/target/surefire-reports/'
+          retention-days: 7
+
+  docker-images:
+    name: Docker image (${{ matrix.service }})
+    if: ${{ inputs.build-images }}
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-service, chat-service, media-service, messaging-ui]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build ${{ matrix.service }} (repo-root context, per-service Dockerfile)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.service }}/Dockerfile
+          push: false
+          tags: messaging-system/${{ matrix.service }}:ci
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
