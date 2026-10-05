@@ -40,6 +40,14 @@ button.link { background: none; color: var(--accent); padding: 0; }
 .card label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
 .alert { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); padding: 10px 12px; border-radius: 8px; }
 
+/* presence, typing, ticks */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--border); margin-right: 8px; vertical-align: middle; }
+.dot.online { background: #16a34a; }
+.preview.typing, #peer-status { color: var(--accent); }
+.ticks { letter-spacing: -3px; margin-left: 2px; }
+.bubble.mine .ticks { opacity: .75; }
+.bubble.mine .ticks.read { color: #a5f3fc; opacity: 1; font-weight: 700; }
+
 /* chat layout */
 .app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
 .sidebar { border-right: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; min-width: 0; }

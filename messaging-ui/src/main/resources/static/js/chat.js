@@ -1,10 +1,10 @@
 /*
  * Chat client.
  * - Gets a short-lived access token from the UI server (/api/v1/session/token, same origin + session cookie).
- * - Talks to chat-service directly: REST for inbox/history/conversations, WebSocket for live messages.
+ * - Talks to chat-service directly: REST for inbox/history/presence, WebSocket for live events.
  * - Asks chat-service which node owns this user (/api/v1/connect: consistent-hash ring) and opens the
  *   WebSocket on that node; re-asks on every reconnect, because the owner changes when nodes join/leave.
- * - User names come from the UI server (/api/v1/users), which proxies auth-service.
+ * - Ticks: ✓ stored (ACK) · ✓✓ delivered (RECEIPT DELIVERED) · blue ✓✓ read (RECEIPT READ).
  * All user content is rendered with textContent (never innerHTML) to prevent XSS.
  */
 (() => {
@@ -13,23 +13,33 @@
   const app = document.getElementById('app');
   const ME = app.dataset.meId;
   const CHAT_APIS = app.dataset.chatApis.split(',').map((url) => url.trim()).filter(Boolean);
-  const OWNER_CHANGED = 4001;   // close code sent by a node that no longer owns this user
+  const OWNER_CHANGED = 4001;          // close code sent by a node that no longer owns this user
+  const TYPING_REPEAT_MS = 3000;       // re-send "typing" at most this often while typing
+  const TYPING_IDLE_MS = 4000;         // stop "typing" after this long without keystrokes
+  const TYPING_SHOW_MS = 6000;         // hide a peer's "typing…" if no update arrives
 
   const el = (id) => document.getElementById(id);
+  const big = (id) => BigInt(id);
   const state = {
     token: null,
     tokenExpiresAt: 0,
     socket: null,
     node: null,
     reconnectDelay: 1000,
-    apiIndex: 0,               // which chat node currently serves our REST calls
-    inbox: new Map(),          // conversationId -> inbox entry
-    names: new Map(),          // userId -> display name
-    current: null,             // { conversationId, peerId, nextBefore }
-    pending: new Map(),        // clientMessageId -> <li>
+    apiIndex: 0,                 // which chat node currently serves our REST calls
+    inbox: new Map(),            // conversationId -> inbox entry
+    names: new Map(),            // userId -> display name
+    presence: new Map(),         // userId -> { online, lastSeen }
+    typing: new Map(),           // conversationId -> timeout handle while the peer is typing
+    delivered: new Set(),        // ids of my messages that reached the peer
+    current: null,               // { conversationId, peerId, nextBefore }
+    pending: new Map(),          // clientMessageId -> <li>
+    lastReadSent: new Map(),     // conversationId -> last READ id we sent
+    typingSentAt: 0,
+    typingIdleTimer: null,
   };
 
-  // ---------- tokens ----------
+  // ---------- tokens & REST ----------
   async function accessToken() {
     if (state.token && Date.now() < state.tokenExpiresAt - 30_000) {
       return state.token;
@@ -96,15 +106,14 @@
     socket.onopen = () => {
       setStatus('online · ' + state.node, 'online');
       state.reconnectDelay = 1000;
-      // We may have missed messages while disconnected: refresh what's on screen.
+      // Offline sync: we may have missed events while disconnected, so reload what's on screen.
       loadInbox();
       if (state.current) openConversation(state.current.conversationId, state.current.peerId);
     };
     socket.onmessage = (event) => handleFrame(JSON.parse(event.data));
     socket.onclose = (event) => {
       if (event.code === OWNER_CHANGED) {
-        // Cluster rebalanced: reconnect to the new owner right away
-        state.reconnectDelay = 1000;
+        state.reconnectDelay = 1000;   // cluster rebalanced: go to the new owner right away
         setStatus('moving to another node…', '');
         return connect();
       }
@@ -118,36 +127,102 @@
     state.reconnectDelay = Math.min(state.reconnectDelay * 2, 30_000);   // exponential backoff
   }
 
+  function sendFrame(frame) {
+    if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+      state.socket.send(JSON.stringify(frame));
+      return true;
+    }
+    return false;
+  }
+
+  // One small handler per server frame type (mirrors the server's FrameHandler design)
+  const frameHandlers = {
+    ACK: onAck,
+    MESSAGE: onMessage,
+    RECEIPT: onReceipt,
+    TYPING: onTyping,
+    PRESENCE: onPresence,
+    ERROR: onError,
+  };
+
   function handleFrame(frame) {
-    if (frame.type === 'ACK') {
-      const li = state.pending.get(frame.clientMessageId);
-      if (li) {
-        li.classList.remove('pending');
-        li.dataset.id = frame.message.messageId;
-        li.querySelector('.meta').textContent = time(frame.message.sentAt);
-        state.pending.delete(frame.clientMessageId);
-      }
-      touchInbox(frame.message, false);
-    } else if (frame.type === 'MESSAGE') {
-      const msg = frame.message;
-      const isOpen = state.current && state.current.conversationId === msg.conversationId;
-      if (isOpen) {
-        appendMessage(msg);
-        scrollToBottom();
-      }
-      touchInbox(msg, !isOpen && msg.senderId !== ME);
-    } else if (frame.type === 'ERROR') {
-      const li = frame.clientMessageId && state.pending.get(frame.clientMessageId);
-      if (li) {
-        li.classList.replace('pending', 'failed');
-        li.querySelector('.meta').textContent = 'not sent: ' + frame.error;
-        state.pending.delete(frame.clientMessageId);
-      }
+    const handler = frameHandlers[frame.type];
+    if (handler) handler(frame);
+  }
+
+  function onAck(frame) {
+    const li = state.pending.get(frame.clientMessageId);
+    if (li) {
+      li.classList.remove('pending');
+      li.dataset.id = frame.message.messageId;
+      li.dataset.sentAt = frame.message.sentAt;
+      state.pending.delete(frame.clientMessageId);
+      renderTicks(li);
+    }
+    touchInbox(frame.message, false);
+  }
+
+  function onMessage(frame) {
+    const msg = frame.message;
+    const isOpen = state.current && state.current.conversationId === msg.conversationId;
+    if (isOpen) {
+      appendMessage(msg);
+      scrollToBottom();
+      clearTyping(msg.conversationId);
+      markReadIfVisible();
+    }
+    touchInbox(msg, !isOpen && msg.senderId !== ME);
+  }
+
+  function onReceipt(frame) {
+    const r = frame.receipt;
+    const entry = state.inbox.get(r.conversationId);
+    if (r.status === 'DELIVERED') {
+      state.delivered.add(r.messageId);
+    } else if (r.userId === ME) {
+      // I read this conversation in another tab
+      if (entry) entry.unread = false;
+      renderInbox();
+      return;
+    } else if (entry && (!entry.peerLastReadMessageId || big(r.messageId) > big(entry.peerLastReadMessageId))) {
+      entry.peerLastReadMessageId = r.messageId;   // peer read up to here: blue ticks
+    }
+    if (state.current && state.current.conversationId === r.conversationId) {
+      document.querySelectorAll('#message-list .bubble.mine[data-id]').forEach(renderTicks);
     }
   }
 
+  function onTyping(frame) {
+    const t = frame.typing;
+    clearTimeout(state.typing.get(t.conversationId));
+    if (t.typing) {
+      state.typing.set(t.conversationId, setTimeout(() => clearTyping(t.conversationId), TYPING_SHOW_MS));
+    } else {
+      state.typing.delete(t.conversationId);
+    }
+    renderTypingAndPresence();
+    renderInbox();
+  }
+
+  function onPresence(frame) {
+    const p = frame.presence;
+    state.presence.set(p.userId, { online: p.online, lastSeen: p.lastSeen });
+    renderTypingAndPresence();
+    renderInbox();
+  }
+
+  function onError(frame) {
+    const li = frame.clientMessageId && state.pending.get(frame.clientMessageId);
+    if (li) {
+      li.classList.replace('pending', 'failed');
+      li.querySelector('.meta').textContent = 'not sent: ' + frame.error;
+      state.pending.delete(frame.clientMessageId);
+    }
+  }
+
+  // ---------- sending, typing, read ----------
   function send(body) {
-    if (!state.current || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+    if (!state.current) return;
     const clientMessageId = crypto.randomUUID();
     // Optimistic bubble: shown immediately, confirmed by the ACK
     const li = bubble({ senderId: ME, body, sentAt: null }, 'sending…');
@@ -155,19 +230,60 @@
     state.pending.set(clientMessageId, li);
     el('message-list').appendChild(li);
     scrollToBottom();
-    state.socket.send(JSON.stringify({
-      type: 'SEND',
-      conversationId: state.current.conversationId,
-      clientMessageId,
-      body,
-    }));
+    stopTyping();
+    sendFrame({ type: 'SEND', conversationId: state.current.conversationId, clientMessageId, body });
   }
 
-  // ---------- inbox ----------
+  function onComposerInput() {
+    if (!state.current) return;
+    if (Date.now() - state.typingSentAt > TYPING_REPEAT_MS) {
+      sendFrame({ type: 'TYPING', conversationId: state.current.conversationId, typing: true });
+      state.typingSentAt = Date.now();
+    }
+    clearTimeout(state.typingIdleTimer);
+    state.typingIdleTimer = setTimeout(stopTyping, TYPING_IDLE_MS);
+  }
+
+  function stopTyping() {
+    clearTimeout(state.typingIdleTimer);
+    if (state.current && state.typingSentAt) {
+      sendFrame({ type: 'TYPING', conversationId: state.current.conversationId, typing: false });
+    }
+    state.typingSentAt = 0;
+  }
+
+  /** Sends READ for the newest message in the open conversation (only when the tab is visible). */
+  function markReadIfVisible() {
+    if (!state.current || document.visibilityState !== 'visible') return;
+    const items = document.querySelectorAll('#message-list li[data-id]');
+    if (!items.length) return;
+    const newest = items[items.length - 1].dataset.id;
+    const conversationId = state.current.conversationId;
+    const last = state.lastReadSent.get(conversationId);
+    if (last && big(newest) <= big(last)) return;
+    if (sendFrame({ type: 'READ', conversationId, messageId: newest })) {
+      state.lastReadSent.set(conversationId, newest);
+      const entry = state.inbox.get(conversationId);
+      if (entry) entry.unread = false;
+      renderInbox();
+    }
+  }
+
+  // ---------- inbox & presence ----------
   async function loadInbox() {
     const entries = await chatApi('/api/v1/conversations');
     state.inbox = new Map(entries.map((e) => [e.conversationId, e]));
     renderInbox();
+    loadPresence();
+  }
+
+  async function loadPresence() {
+    const peers = [...new Set([...state.inbox.values()].map((e) => e.peerId))];
+    if (!peers.length) return;
+    const list = await chatApi('/api/v1/presence?userIds=' + peers.map(encodeURIComponent).join(','));
+    list.forEach((p) => state.presence.set(p.userId, { online: p.online, lastSeen: p.lastSeen }));
+    renderInbox();
+    renderTypingAndPresence();
   }
 
   function touchInbox(msg, unread) {
@@ -180,7 +296,7 @@
       lastSenderId: msg.senderId,
       preview: msg.body.slice(0, 100),
       lastMessageAt: msg.sentAt,
-      unread: unread || entry.unread,
+      unread: unread || (entry.unread && msg.senderId !== ME),
     });
     state.inbox.set(msg.conversationId, entry);
     renderInbox();
@@ -191,47 +307,74 @@
     const entries = [...state.inbox.values()].sort((a, b) => {
       if (!a.lastMessageId) return 1;
       if (!b.lastMessageId) return -1;
-      return BigInt(b.lastMessageId) > BigInt(a.lastMessageId) ? 1 : -1;
+      return big(b.lastMessageId) > big(a.lastMessageId) ? 1 : -1;
     });
-    const list = el('inbox');
     const items = await Promise.all(entries.map(async (entry) => {
       const li = document.createElement('li');
       li.classList.toggle('active', state.current?.conversationId === entry.conversationId);
       li.classList.toggle('unread', !!entry.unread);
+
       const name = document.createElement('div');
       name.className = 'name';
       const who = document.createElement('span');
-      who.textContent = await displayName(entry.peerId);
+      const dot = document.createElement('span');
+      dot.className = 'dot' + (state.presence.get(entry.peerId)?.online ? ' online' : '');
+      who.append(dot, document.createTextNode(await displayName(entry.peerId)));
       const when = document.createElement('span');
       when.className = 'muted small';
       when.textContent = entry.lastMessageAt ? time(entry.lastMessageAt) : '';
       name.append(who, when);
+
       const preview = document.createElement('div');
       preview.className = 'preview';
-      preview.textContent = entry.preview
-        ? (entry.lastSenderId === ME ? 'You: ' : '') + entry.preview
-        : 'No messages yet';
+      if (state.typing.has(entry.conversationId)) {
+        preview.textContent = 'typing…';
+        preview.classList.add('typing');
+      } else {
+        preview.textContent = entry.preview
+          ? (entry.lastSenderId === ME ? 'You: ' : '') + entry.preview
+          : 'No messages yet';
+      }
       li.append(name, preview);
       li.onclick = () => openConversation(entry.conversationId, entry.peerId);
       return li;
     }));
-    list.replaceChildren(...items);
+    el('inbox').replaceChildren(...items);
+  }
+
+  function renderTypingAndPresence() {
+    if (!state.current) return;
+    const sub = el('peer-status');
+    if (state.typing.has(state.current.conversationId)) {
+      sub.textContent = 'typing…';
+      return;
+    }
+    const p = state.presence.get(state.current.peerId);
+    sub.textContent = !p ? '' : p.online ? 'online' : p.lastSeen ? 'last seen ' + dateTime(p.lastSeen) : 'offline';
+  }
+
+  function clearTyping(conversationId) {
+    clearTimeout(state.typing.get(conversationId));
+    state.typing.delete(conversationId);
+    renderTypingAndPresence();
+    renderInbox();
   }
 
   // ---------- conversation ----------
   async function openConversation(conversationId, peerId) {
+    if (state.current?.conversationId !== conversationId) stopTyping();
     state.current = { conversationId, peerId, nextBefore: null };
-    const entry = state.inbox.get(conversationId);
-    if (entry) entry.unread = false;
 
     el('empty-state').classList.add('hidden');
     ['conversation-header', 'messages', 'composer'].forEach((id) => el(id).classList.remove('hidden'));
     el('peer-name').textContent = await displayName(peerId);
+    renderTypingAndPresence();
     el('message-list').replaceChildren();
     state.pending.clear();
 
     await loadOlder();
     scrollToBottom();
+    markReadIfVisible();
     renderInbox();
     el('message-input').focus();
   }
@@ -257,13 +400,28 @@
     const li = document.createElement('li');
     li.className = 'bubble' + (msg.senderId === ME ? ' mine' : '');
     if (msg.messageId) li.dataset.id = msg.messageId;
+    if (msg.sentAt) li.dataset.sentAt = msg.sentAt;
     const text = document.createElement('span');
     text.textContent = msg.body;
     const meta = document.createElement('span');
     meta.className = 'meta';
     meta.textContent = metaText;
     li.append(text, meta);
+    if (msg.messageId && msg.senderId === ME) renderTicks(li);
     return li;
+  }
+
+  /** ✓ stored · ✓✓ delivered · blue ✓✓ read (peer's read pointer has reached this message) */
+  function renderTicks(li) {
+    const id = li.dataset.id;
+    const entry = state.current && state.inbox.get(state.current.conversationId);
+    const read = entry?.peerLastReadMessageId && big(entry.peerLastReadMessageId) >= big(id);
+    const meta = li.querySelector('.meta');
+    meta.textContent = time(li.dataset.sentAt) + ' ';
+    const ticks = document.createElement('span');
+    ticks.className = 'ticks' + (read ? ' read' : '');
+    ticks.textContent = read || state.delivered.has(id) ? '✓✓' : '✓';
+    meta.appendChild(ticks);
   }
 
   // ---------- search ----------
@@ -300,11 +458,16 @@
       state.inbox.set(conversation.conversationId, { conversationId: conversation.conversationId, peerId });
     }
     openConversation(conversation.conversationId, peerId);
+    loadPresence();
   }
 
   // ---------- helpers ----------
   function time(iso) {
     return iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  }
+
+  function dateTime(iso) {
+    return new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
 
   function scrollToBottom() {
@@ -327,7 +490,9 @@
       input.value = '';
     }
   });
+  el('message-input').addEventListener('input', onComposerInput);
   el('load-older').addEventListener('click', loadOlder);
+  document.addEventListener('visibilitychange', markReadIfVisible);   // read when the user comes back
 
   connect();
 })();
