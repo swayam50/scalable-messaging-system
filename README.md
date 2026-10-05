@@ -18,6 +18,7 @@ A WhatsApp-style chat backend built to scale horizontally:
 | `chat-service` | WebSockets, hash ring, gRPC forwarding, message storage | ScyllaDB |
 | `media-service` | Attachments: presigned uploads/downloads, verification, signed descriptors | PostgreSQL + SeaweedFS (S3) |
 | `messaging-ui` | Login and chat pages (Mustache + vanilla JS WebSocket) | — |
+| `load-test` | WebSocket load generator: per-stage ACK and delivery latency, throughput | — |
 
 ## Stack
 Java 25 · Spring Boot 4.1 · Spring gRPC · SeaweedFS (S3) · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
@@ -162,6 +163,13 @@ viewer  ──5. GET /api/v1/media/{id}/download ▶ media-service (participants
 - **Ticks:** ✓ means stored, ✓✓ delivered, highlighted ✓✓ read. Read pointers are written `USING TIMESTAMP` = message time, so they only ever move forward.
 - **Presence:** each user's owner node is the source of truth. `/api/v1/presence` asks each owner node over gRPC. Moving between nodes does not show the user as offline.
 
+## Performance
+Load-tested with the `load-test` module: real JWTs, real WebSockets, and an open-loop send rate. Full tables and method are in [load-test/RESULTS.md](load-test/RESULTS.md).
+- **Setup:** all on one 12-core laptop (3 chat nodes + ScyllaDB + PostgreSQL + SeaweedFS + the load generator), with **2,000 concurrent WebSockets**. About 2/3 of conversations span two nodes, so their messages go over gRPC.
+- **Up to 8,000 msg/s with 0 errors and 0 lost messages.** At 4,000 msg/s, ACK p99 is **19.5 ms** (ScyllaDB on 2 shards).
+- **10,000 msg/s is sustained with 0 timeouts** (p99 ≈ 210 ms), and the ceiling is about 12k msg/s on 2 shards. **ScyllaDB was the bottleneck:** going from 1 shard to 2 raised the ceiling about 25%.
+- **Cross-node delivery over gRPC adds about 1 ms at p50.**
+
 ## IDs
 **Snowflake (64-bit, message IDs)**
 ```
@@ -196,4 +204,5 @@ viewer  ──5. GET /api/v1/media/{id}/download ▶ media-service (participants
 4. ✅ Multi-node: hash ring, TTL membership, gRPC forwarding, rebalancing
 5. ✅ Receipts, typing, presence, offline sync
 6. ✅ Media messages (image, video, audio, file)
-7. ⏳ Load test + CI
+7. ✅ Load test (see Performance)
+8. ⏳ CI (GitHub Actions)

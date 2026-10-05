@@ -25,6 +25,7 @@
         <module>chat-service</module>
         <module>media-service</module>
         <module>messaging-ui</module>
+        <module>load-test</module>
     </modules>
 
     <properties>
