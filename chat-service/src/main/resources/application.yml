@@ -39,6 +39,7 @@ chat:
       - classpath:cql/V1__schema.cql
       - classpath:cql/V2__receipts_presence.cql
       - classpath:cql/V3__media_messages.cql
+      - classpath:cql/V4__send_idempotency.cql
   history:
     max-page-size: 100
   media:

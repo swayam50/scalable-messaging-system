@@ -12,14 +12,17 @@ import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
 import io.wulfcodes.messaging.chat.model.po.Conversation;
 import io.wulfcodes.messaging.chat.model.po.InboxEntry;
 import io.wulfcodes.messaging.chat.model.po.Message;
+import io.wulfcodes.messaging.chat.model.po.SentMessage;
 import io.wulfcodes.messaging.chat.model.po.eo.AttachmentUdt;
 import io.wulfcodes.messaging.chat.model.po.eo.MessageKey;
+import io.wulfcodes.messaging.chat.model.po.eo.SentMessageKey;
 import io.wulfcodes.messaging.common.model.dto.AttachmentDescriptor;
 import io.wulfcodes.messaging.common.model.vo.ContentType;
 import io.wulfcodes.messaging.common.util.AttachmentSigner;
 import io.wulfcodes.messaging.chat.model.vo.FrameType;
 import io.wulfcodes.messaging.chat.repository.InboxRepository;
 import io.wulfcodes.messaging.chat.repository.MessageRepository;
+import io.wulfcodes.messaging.chat.repository.SentMessageRepository;
 import io.wulfcodes.messaging.chat.service.spec.ConversationService;
 import io.wulfcodes.messaging.chat.service.spec.DeliveryService;
 import io.wulfcodes.messaging.chat.service.spec.ReceiptService;
@@ -38,6 +41,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.IntConsumer;
 
@@ -47,6 +51,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -66,6 +72,8 @@ class MessageServiceImplTest {
     @Mock
     private InboxRepository inboxRepository;
     @Mock
+    private SentMessageRepository sentMessageRepository;
+    @Mock
     private ConversationService conversationService;
     @Mock
     private DeliveryService deliveryService;
@@ -79,7 +87,10 @@ class MessageServiceImplTest {
     void setUp() {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         ChatProperties properties = new ChatProperties(1, 4000, null, null, null, new ChatProperties.History(100), null, null, null);
-        messageService = new MessageServiceImpl(messageRepository, inboxRepository, conversationService, deliveryService,
+        // default: every claim is new (first attempt of a SEND)
+        lenient().when(sentMessageRepository.claim(any(SentMessage.class))).thenAnswer(inv -> inv.getArgument(0));
+        messageService = new MessageServiceImpl(messageRepository, inboxRepository, sentMessageRepository,
+                conversationService, deliveryService,
                 receiptService, messageMapper, new SnowflakeIdGenerator(1, clock), properties, SIGNER, clock);
     }
 
@@ -201,6 +212,68 @@ class MessageServiceImplTest {
     }
 
     @Test
+    void retriedSendReturnsTheOriginalMessageWithoutStoringOrDeliveringAgain() {
+        when(conversationService.requireParticipant(CID, ALICE)).thenReturn(conversation(NOW));
+        long originalId = 42L << 22;
+        when(sentMessageRepository.claim(any(SentMessage.class))).thenReturn(claimOf(originalId, CID));
+        MessageKey originalKey = new MessageKey(CID, BucketUtil.bucketOf(originalId), originalId);
+        when(messageRepository.findById(any(MessageKey.class))).thenReturn(Optional.of(
+                new Message(originalKey, ALICE, "hello", "c-1", ContentType.TEXT, null)));
+
+        List<MessageResponse> acks = new java.util.ArrayList<>();
+        MessageResponse response = messageService.send(ALICE, frame("hello"), "s", acks::add);
+
+        assertThat(response.messageId()).isEqualTo(Long.toString(originalId));
+        assertThat(acks).containsExactly(response);
+        verify(messageRepository, never()).save(any());
+        verifyNoInteractions(inboxRepository, deliveryService);
+    }
+
+    @Test
+    void retryAfterAnInterruptedFirstAttemptStoresTheMessageUnderTheClaimedId() {
+        when(conversationService.requireParticipant(CID, ALICE)).thenReturn(conversation(NOW));
+        long claimedId = 42L << 22;
+        when(sentMessageRepository.claim(any(SentMessage.class))).thenReturn(claimOf(claimedId, CID));
+        when(messageRepository.findById(any(MessageKey.class))).thenReturn(Optional.empty());
+        when(messageRepository.save(any(Message.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MessageResponse response = messageService.send(ALICE, frame("hello"), "s", stored -> { });
+
+        assertThat(response.messageId()).isEqualTo(Long.toString(claimedId));
+        verify(deliveryService).deliver(eq(BOB), any(ServerFrame.class), eq(null), any(IntConsumer.class));
+    }
+
+    @Test
+    void clientMessageIdReusedInAnotherConversationIsRejected() {
+        when(conversationService.requireParticipant(CID, ALICE)).thenReturn(conversation(NOW));
+        when(sentMessageRepository.claim(any(SentMessage.class))).thenReturn(claimOf(7L, "OTHER-CONV"));
+
+        assertThatThrownBy(() -> messageService.send(ALICE, frame("hello"), "s", stored -> { }))
+                .isInstanceOf(InvalidMessageException.class);
+        verify(messageRepository, never()).save(any());
+    }
+
+    @Test
+    void sendWithoutClientMessageIdIsNotDeduplicated() {
+        when(conversationService.requireParticipant(CID, ALICE)).thenReturn(conversation(NOW));
+        when(messageRepository.save(any(Message.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        messageService.send(ALICE, new ClientFrame(FrameType.SEND, CID, null, "hi", null, null, null, null), "s", s -> { });
+
+        verify(sentMessageRepository, never()).claim(any());
+        verify(messageRepository).save(any(Message.class));
+    }
+
+    @Test
+    void oversizedClientMessageIdIsRejected() {
+        ClientFrame frame = new ClientFrame(FrameType.SEND, CID, "x".repeat(65), "hi", null, null, null, null);
+
+        assertThatThrownBy(() -> messageService.send(ALICE, frame, "s", s -> { }))
+                .isInstanceOf(InvalidMessageException.class);
+        verifyNoInteractions(sentMessageRepository, messageRepository);
+    }
+
+    @Test
     void mediaPreviewUsesALabelAndTheCaption() {
         Message photo = new Message(new MessageKey(CID, 0, 1), ALICE, "look!", null, ContentType.IMAGE,
                 new AttachmentUdt("A", "cat.png", "image/png", 10));
@@ -225,6 +298,10 @@ class MessageServiceImplTest {
 
     private static Conversation conversation(Instant createdAt) {
         return new Conversation(CID, Set.of(ALICE, BOB), createdAt);
+    }
+
+    private static SentMessage claimOf(long messageId, String conversationId) {
+        return new SentMessage(new SentMessageKey(ALICE, "c-1"), conversationId, messageId);
     }
 
     private static Message message(long id) {

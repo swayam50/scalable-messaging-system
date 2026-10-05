@@ -86,6 +86,10 @@ chat-service applies its ScyllaDB schema at startup; the script is idempotent.
 - `conversations_by_user (user_id, conversation_id)`
   - Written `USING TIMESTAMP` = the message's Snowflake time, so a delayed older write can never overwrite a newer "last message".
 - `cluster_nodes (cluster, node_id)`: live nodes, written with TTL heartbeats for the hash ring.
+- `sent_messages ((sender_id, client_message_id))`: makes SEND idempotent.
+  - The first SEND claims the pair with `INSERT … IF NOT EXISTS` and stores its message id.
+  - A retry (no ACK seen, socket dropped) loses the claim, gets the original message back in its ACK, and nothing is stored or delivered twice.
+  - Rows expire after a day (`default_time_to_live`), since they only need to outlive the client's retry window.
 
 Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbers lose precision above 2^53.
 
@@ -153,7 +157,7 @@ viewer  ──5. GET /api/v1/media/{id}/download ▶ media-service (participants
 | `SEND` | client → server | text or media message |
 | `READ` | client → server | read up to a message (moves the read pointer) |
 | `TYPING` | both | typing indicator (never stored) |
-| `ACK` | server → sender | stored; always sent **before** fan-out |
+| `ACK` | server → sender | stored; always sent **before** fan-out. A retried SEND (same `clientMessageId`) gets the original message again |
 | `MESSAGE` | server → participants | new message |
 | `RECEIPT` | server → sender | `DELIVERED` (reached a live session, also across nodes) / `READ` |
 | `PRESENCE` | server → contacts | online / offline + last seen |

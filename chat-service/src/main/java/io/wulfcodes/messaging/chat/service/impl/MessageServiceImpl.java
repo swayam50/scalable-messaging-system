@@ -10,11 +10,14 @@ import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
 import io.wulfcodes.messaging.chat.model.po.Conversation;
 import io.wulfcodes.messaging.chat.model.po.InboxEntry;
 import io.wulfcodes.messaging.chat.model.po.Message;
+import io.wulfcodes.messaging.chat.model.po.SentMessage;
 import io.wulfcodes.messaging.chat.model.po.eo.AttachmentUdt;
 import io.wulfcodes.messaging.chat.model.po.eo.InboxKey;
 import io.wulfcodes.messaging.chat.model.po.eo.MessageKey;
+import io.wulfcodes.messaging.chat.model.po.eo.SentMessageKey;
 import io.wulfcodes.messaging.chat.repository.InboxRepository;
 import io.wulfcodes.messaging.chat.repository.MessageRepository;
+import io.wulfcodes.messaging.chat.repository.SentMessageRepository;
 import io.wulfcodes.messaging.chat.service.spec.ConversationService;
 import io.wulfcodes.messaging.chat.service.spec.DeliveryService;
 import io.wulfcodes.messaging.chat.service.spec.MessageService;
@@ -31,6 +34,7 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 @Service
@@ -38,9 +42,11 @@ import java.util.function.Consumer;
 public class MessageServiceImpl implements MessageService {
 
     static final int PREVIEW_LENGTH = 100;
+    static final int MAX_CLIENT_MESSAGE_ID_LENGTH = 64;
 
     private final MessageRepository messageRepository;
     private final InboxRepository inboxRepository;
+    private final SentMessageRepository sentMessageRepository;
     private final ConversationService conversationService;
     private final DeliveryService deliveryService;
     private final ReceiptService receiptService;
@@ -57,6 +63,20 @@ public class MessageServiceImpl implements MessageService {
         Conversation conversation = conversationService.requireParticipant(frame.conversationId(), senderId);
 
         long messageId = idGenerator.nextId();
+        if (frame.clientMessageId() != null) {
+            long claimedId = claim(senderId, frame, messageId);
+            if (claimedId != messageId) {
+                // A retry of a SEND we already handled: answer with the original message.
+                Optional<MessageResponse> original = findStored(conversation.getConversationId(), claimedId);
+                if (original.isPresent()) {
+                    onStored.accept(original.get());   // ACK again; no second fan-out
+                    return original.get();
+                }
+                // The first attempt claimed the id but never stored the message: finish it under that id.
+                messageId = claimedId;
+            }
+        }
+
         AttachmentDescriptor attachment = frame.attachment();
         Message message = messageRepository.save(Message.builder()
                 .key(new MessageKey(conversation.getConversationId(), BucketUtil.bucketOf(messageId), messageId))
@@ -108,6 +128,24 @@ public class MessageServiceImpl implements MessageService {
         return new MessagePageResponse(messageMapper.toResponses(page), nextBefore);
     }
 
+    /** Claims (sender, clientMessageId) for {@code messageId}; returns the id that owns the claim. */
+    private long claim(String senderId, ClientFrame frame, long messageId) {
+        SentMessage owner = sentMessageRepository.claim(SentMessage.builder()
+                .key(new SentMessageKey(senderId, frame.clientMessageId()))
+                .conversationId(frame.conversationId())
+                .messageId(messageId)
+                .build());
+        if (!owner.getConversationId().equals(frame.conversationId())) {
+            throw new InvalidMessageException("clientMessageId was already used in another conversation");
+        }
+        return owner.getMessageId();
+    }
+
+    private Optional<MessageResponse> findStored(String conversationId, long messageId) {
+        return messageRepository.findById(new MessageKey(conversationId, BucketUtil.bucketOf(messageId), messageId))
+                .map(messageMapper::toResponse);
+    }
+
     private void updateInboxes(String conversationId, String senderId, String recipientId, Message message) {
         long messageId = message.getKey().getMessageId();
         long writeTimeMicros = SnowflakeId.decode(messageId).timestamp() * 1_000;
@@ -133,6 +171,10 @@ public class MessageServiceImpl implements MessageService {
         }
         if (frame.body() != null && frame.body().length() > properties.maxMessageLength()) {
             throw new InvalidMessageException("Message exceeds " + properties.maxMessageLength() + " characters");
+        }
+        if (frame.clientMessageId() != null
+                && (frame.clientMessageId().isBlank() || frame.clientMessageId().length() > MAX_CLIENT_MESSAGE_ID_LENGTH)) {
+            throw new InvalidMessageException("clientMessageId must be 1-" + MAX_CLIENT_MESSAGE_ID_LENGTH + " characters");
         }
         ContentType type = frame.contentTypeOrText();
         if (type == ContentType.TEXT) {

@@ -116,6 +116,37 @@ class ChatFlowIntegrationTest {
     }
 
     @Test
+    void retriedSendIsStoredAndDeliveredOnce() throws Exception {
+        String conversationId = createConversation("token-carol", "DAVE");
+        BlockingQueue<String> carolFrames = new LinkedBlockingQueue<>();
+        BlockingQueue<String> daveFrames = new LinkedBlockingQueue<>();
+        WebSocket carol = connect("token-carol", carolFrames);
+        connect("token-dave", daveFrames);
+        String send = """
+                {"type":"SEND","conversationId":"%s","clientMessageId":"c-retry","body":"once"}""".formatted(conversationId);
+
+        carol.sendText(send, true).join();
+        String firstAck = next(carolFrames);
+        assertThat((String) JsonPath.read(next(daveFrames), "$.type")).isEqualTo("MESSAGE");
+
+        // the client never saw the ACK (say the socket dropped) and retries on a new connection
+        BlockingQueue<String> retryFrames = new LinkedBlockingQueue<>();
+        connect("token-carol", retryFrames).sendText(send, true).join();
+        String retryAck = next(retryFrames);
+
+        assertThat((String) JsonPath.read(retryAck, "$.type")).isEqualTo("ACK");
+        String messageId = JsonPath.read(firstAck, "$.message.messageId");
+        assertThat((String) JsonPath.read(retryAck, "$.message.messageId")).isEqualTo(messageId);
+
+        String history = rest.get().uri("/api/v1/conversations/{id}/messages", conversationId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer token-dave").retrieve().body(String.class);
+        List<String> ids = JsonPath.read(history, "$.messages[*].messageId");
+        assertThat(ids).containsExactly(messageId);
+        // dave was not pushed the message a second time
+        assertThat(daveFrames).noneMatch(frame -> frame.contains("\"type\":\"MESSAGE\""));
+    }
+
+    @Test
     void outsiderCannotSendIntoSomeoneElsesConversation() throws Exception {
         String conversationId = createConversation("token-alice", "BOB");
         BlockingQueue<String> malloryFrames = new LinkedBlockingQueue<>();
