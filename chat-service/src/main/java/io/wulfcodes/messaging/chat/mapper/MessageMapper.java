@@ -1,6 +1,9 @@
 package io.wulfcodes.messaging.chat.mapper;
 
+import io.wulfcodes.messaging.chat.model.dto.response.AttachmentResponse;
 import io.wulfcodes.messaging.chat.model.dto.response.InboxEntryResponse;
+import io.wulfcodes.messaging.chat.model.po.eo.AttachmentUdt;
+import io.wulfcodes.messaging.common.model.vo.ContentType;
 import io.wulfcodes.messaging.chat.model.dto.response.MessageResponse;
 import io.wulfcodes.messaging.chat.model.po.InboxEntry;
 import io.wulfcodes.messaging.chat.model.po.Message;
@@ -21,7 +24,15 @@ public interface MessageMapper {
     @Mapping(target = "messageId", source = "key.messageId", qualifiedByName = "idToString")
     @Mapping(target = "conversationId", source = "key.conversationId")
     @Mapping(target = "sentAt", source = "key.messageId", qualifiedByName = "idToInstant")
+    @Mapping(target = "contentType", source = "contentType", qualifiedByName = "contentTypeOrText")
     MessageResponse toResponse(Message message);
+
+    AttachmentResponse toAttachmentResponse(AttachmentUdt attachment);
+
+    @Named("contentTypeOrText")
+    default ContentType contentTypeOrText(ContentType contentType) {
+        return contentType == null ? ContentType.TEXT : contentType;   // rows written before media support
+    }
 
     List<MessageResponse> toResponses(List<Message> messages);
 

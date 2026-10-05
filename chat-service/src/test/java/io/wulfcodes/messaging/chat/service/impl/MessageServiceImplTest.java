@@ -12,7 +12,11 @@ import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
 import io.wulfcodes.messaging.chat.model.po.Conversation;
 import io.wulfcodes.messaging.chat.model.po.InboxEntry;
 import io.wulfcodes.messaging.chat.model.po.Message;
+import io.wulfcodes.messaging.chat.model.po.eo.AttachmentUdt;
 import io.wulfcodes.messaging.chat.model.po.eo.MessageKey;
+import io.wulfcodes.messaging.common.model.dto.AttachmentDescriptor;
+import io.wulfcodes.messaging.common.model.vo.ContentType;
+import io.wulfcodes.messaging.common.util.AttachmentSigner;
 import io.wulfcodes.messaging.chat.model.vo.FrameType;
 import io.wulfcodes.messaging.chat.repository.InboxRepository;
 import io.wulfcodes.messaging.chat.repository.MessageRepository;
@@ -55,6 +59,7 @@ class MessageServiceImplTest {
     private static final String ALICE = "ALICE";
     private static final String BOB = "BOB";
     private static final String CID = "CONV";
+    private static final AttachmentSigner SIGNER = new AttachmentSigner("test-signing-secret-that-is-long-enough");
 
     @Mock
     private MessageRepository messageRepository;
@@ -73,9 +78,9 @@ class MessageServiceImplTest {
     @BeforeEach
     void setUp() {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        ChatProperties properties = new ChatProperties(1, 4000, null, null, null, new ChatProperties.History(100), null, null);
+        ChatProperties properties = new ChatProperties(1, 4000, null, null, null, new ChatProperties.History(100), null, null, null);
         messageService = new MessageServiceImpl(messageRepository, inboxRepository, conversationService, deliveryService,
-                receiptService, messageMapper, new SnowflakeIdGenerator(1, clock), properties, clock);
+                receiptService, messageMapper, new SnowflakeIdGenerator(1, clock), properties, SIGNER, clock);
     }
 
     @Test
@@ -157,8 +162,65 @@ class MessageServiceImplTest {
         verify(messageRepository, times(1)).findPageBefore(eq(CID), anyInt(), anyLong(), anyInt());
     }
 
+    // ---------------------------------------------------------------- media messages
+
+    @Test
+    void imageWithValidSignedAttachmentIsStoredWithItsMetadata() {
+        when(conversationService.requireParticipant(CID, ALICE)).thenReturn(conversation(NOW));
+        when(messageRepository.save(any(Message.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MessageResponse response = messageService.send(ALICE,
+                mediaFrame(ContentType.IMAGE, SIGNER.sign(attachment(ALICE, CID, ContentType.IMAGE))), "s", stored -> { });
+
+        assertThat(response.contentType()).isEqualTo(ContentType.IMAGE);
+        assertThat(response.attachment().fileName()).isEqualTo("cat.png");
+        assertThat(response.body()).isNull();   // caption is optional
+    }
+
+    @Test
+    void forgedOrTamperedAttachmentIsRejected() {
+        AttachmentDescriptor forged = new AttachmentSigner("an-attacker-secret-that-is-long-enough!!").sign(attachment(ALICE, CID, ContentType.IMAGE));
+        assertThatThrownBy(() -> messageService.send(ALICE, mediaFrame(ContentType.IMAGE, forged), "s", stored -> { }))
+                .isInstanceOf(InvalidMessageException.class);
+        verify(messageRepository, never()).save(any());
+    }
+
+    @Test
+    void someoneElsesUploadOrOtherConversationOrWrongTypeIsRejected() {
+        AttachmentDescriptor bobsUpload = SIGNER.sign(attachment(BOB, CID, ContentType.IMAGE));
+        AttachmentDescriptor otherConversation = SIGNER.sign(attachment(ALICE, "OTHER", ContentType.IMAGE));
+        AttachmentDescriptor image = SIGNER.sign(attachment(ALICE, CID, ContentType.IMAGE));
+
+        assertThatThrownBy(() -> messageService.send(ALICE, mediaFrame(ContentType.IMAGE, bobsUpload), "s", s -> { }))
+                .isInstanceOf(InvalidMessageException.class);
+        assertThatThrownBy(() -> messageService.send(ALICE, mediaFrame(ContentType.IMAGE, otherConversation), "s", s -> { }))
+                .isInstanceOf(InvalidMessageException.class);
+        assertThatThrownBy(() -> messageService.send(ALICE, mediaFrame(ContentType.VIDEO, image), "s", s -> { }))
+                .isInstanceOf(InvalidMessageException.class);
+        verify(messageRepository, never()).save(any());
+    }
+
+    @Test
+    void mediaPreviewUsesALabelAndTheCaption() {
+        Message photo = new Message(new MessageKey(CID, 0, 1), ALICE, "look!", null, ContentType.IMAGE,
+                new AttachmentUdt("A", "cat.png", "image/png", 10));
+        Message file = new Message(new MessageKey(CID, 0, 2), ALICE, null, null, ContentType.FILE,
+                new AttachmentUdt("B", "report.pdf", "application/pdf", 10));
+
+        assertThat(MessageServiceImpl.previewOf(photo)).isEqualTo("📷 Photo · look!");
+        assertThat(MessageServiceImpl.previewOf(file)).isEqualTo("📎 report.pdf");
+    }
+
+    private static AttachmentDescriptor attachment(String uploader, String conversationId, ContentType type) {
+        return new AttachmentDescriptor("ATT", conversationId, uploader, type, "cat.png", "image/png", 2048, null);
+    }
+
+    private static ClientFrame mediaFrame(ContentType type, AttachmentDescriptor attachment) {
+        return new ClientFrame(FrameType.SEND, CID, "c-9", null, null, null, type, attachment);
+    }
+
     private static ClientFrame frame(String body) {
-        return new ClientFrame(FrameType.SEND, CID, "c-1", body, null, null);
+        return new ClientFrame(FrameType.SEND, CID, "c-1", body, null, null, null, null);
     }
 
     private static Conversation conversation(Instant createdAt) {
@@ -166,6 +228,6 @@ class MessageServiceImplTest {
     }
 
     private static Message message(long id) {
-        return new Message(new MessageKey(CID, 0, id), ALICE, "m" + id, null);
+        return new Message(new MessageKey(CID, 0, id), ALICE, "m" + id, null, ContentType.TEXT, null);
     }
 }

@@ -34,6 +34,7 @@ public class ChatPageController {
         }
         model.addAttribute("me", tokens.user());
         model.addAttribute("chatApiUrls", String.join(",", properties.chatApiUrls()));
+        model.addAttribute("mediaApiUrl", properties.mediaApiUrl());
         return "chats";
     }
 }

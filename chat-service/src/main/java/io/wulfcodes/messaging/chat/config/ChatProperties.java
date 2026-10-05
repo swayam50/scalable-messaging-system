@@ -18,6 +18,7 @@ public record ChatProperties(
         Cluster cluster,
         Cassandra cassandra,
         History history,
+        Media media,
         Auth auth,
         Cors cors
 ) {
@@ -46,6 +47,10 @@ public record ChatProperties(
     }
 
     public record History(int maxPageSize) {
+    }
+
+    /** @param signingSecret HMAC secret shared with media-service (attachment descriptors) */
+    public record Media(String signingSecret) {
     }
 
     /**

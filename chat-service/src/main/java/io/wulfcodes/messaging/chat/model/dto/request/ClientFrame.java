@@ -1,11 +1,15 @@
 package io.wulfcodes.messaging.chat.model.dto.request;
 
 import io.wulfcodes.messaging.chat.model.vo.FrameType;
+import io.wulfcodes.messaging.common.model.dto.AttachmentDescriptor;
+import io.wulfcodes.messaging.common.model.vo.ContentType;
 
 /**
  * Frame sent by a client over the WebSocket. Which fields are used depends on {@code type}:
  * <pre>
  * SEND   {"type":"SEND","conversationId":"01J..","clientMessageId":"c-42","body":"hi"}
+ * SEND   {"type":"SEND","conversationId":"01J..","clientMessageId":"c-43","contentType":"IMAGE",
+ *         "body":"optional caption","attachment":{...signed descriptor from media-service...}}
  * READ   {"type":"READ","conversationId":"01J..","messageId":"1006..."}
  * TYPING {"type":"TYPING","conversationId":"01J..","typing":true}
  * </pre>
@@ -19,6 +23,13 @@ public record ClientFrame(
         String clientMessageId,
         String body,
         String messageId,
-        Boolean typing
+        Boolean typing,
+        ContentType contentType,
+        AttachmentDescriptor attachment
 ) {
+
+    /** Missing contentType means a plain text message (older clients). */
+    public ContentType contentTypeOrText() {
+        return contentType == null ? ContentType.TEXT : contentType;
+    }
 }

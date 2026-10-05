@@ -38,8 +38,12 @@ chat:
     schema-locations:            # applied in order at startup
       - classpath:cql/V1__schema.cql
       - classpath:cql/V2__receipts_presence.cql
+      - classpath:cql/V3__media_messages.cql
   history:
     max-page-size: 100
+  media:
+    # Shared with media-service: verifies the HMAC on attachment descriptors clients send
+    signing-secret: ${MEDIA_SIGNING_SECRET:local-dev-media-signing-secret-change-me}
   auth:
     jwks-uri: ${AUTH_JWKS_URI:http://localhost:8081/.well-known/jwks.json}
     public-key: ${AUTH_PUBLIC_KEY:}

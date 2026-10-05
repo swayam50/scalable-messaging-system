@@ -45,6 +45,12 @@ public class ConversationResource {
         return conversationService.getOrCreateDirect(jwt.getSubject(), request.peerId());
     }
 
+    /** 404 unless the caller is a participant (media-service relies on this for access checks). */
+    @GetMapping(path = "/{conversationId}", version = WebConfig.API_V1)
+    public ConversationResponse get(@AuthenticationPrincipal Jwt jwt, @PathVariable String conversationId) {
+        return conversationService.getForParticipant(conversationId, jwt.getSubject());
+    }
+
     @GetMapping(path = "/{conversationId}/messages", version = WebConfig.API_V1)
     public MessagePageResponse history(@AuthenticationPrincipal Jwt jwt,
                                        @PathVariable String conversationId,

@@ -16,22 +16,23 @@ A WhatsApp-style chat backend built to scale horizontally:
 | `messaging-common` | Shared library: Snowflake/ULID generators, shared value objects and DTOs | — |
 | `auth-service` | Register, login, JWT access + refresh tokens, users | PostgreSQL |
 | `chat-service` | WebSockets, hash ring, gRPC forwarding, message storage | ScyllaDB |
+| `media-service` | Attachments: presigned uploads/downloads, verification, signed descriptors | PostgreSQL + MinIO |
 | `messaging-ui` | Login and chat pages (Mustache + vanilla JS WebSocket) | — |
 
 ## Stack
-Java 25 · Spring Boot 4.1 · Spring gRPC · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
+Java 25 · Spring Boot 4.1 · Spring gRPC · MinIO · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
 
 ## Run locally
 ```bash
 cp .env.example .env          # adjust credentials
-docker compose up -d          # PostgreSQL + ScyllaDB
+docker compose up -d          # PostgreSQL + ScyllaDB + MinIO
 ./mvnw verify                 # build + all tests
 ```
 Run the whole stack in Docker, then open **http://localhost:8080**:
 ```bash
 docker compose --profile app up -d --build
 ```
-This starts PostgreSQL, ScyllaDB, auth-service, **three chat-service nodes** (8082–8084) and the UI.
+This starts PostgreSQL, ScyllaDB, MinIO, auth-service, **three chat-service nodes** (8082–8084), media-service (8085) and the UI.
 Register two users in two browsers (or one normal and one private window) and chat. The status line
 shows which node each user is connected to. Stop one node (`docker compose stop chat-service-1`) and
 watch its users reconnect to their new owner.
@@ -112,12 +113,51 @@ Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbe
 - **REST failover:** every node serves the full REST API. The UI gets the list of nodes, and the client moves to the next one if a node is down.
   - A load balancer would usually do this in production.
 
+## Media messages (image · video · audio · file)
+```
+browser ──1. POST /api/v1/media/uploads──▶ media-service   (type/size policy + membership check via chat-service,
+        ◀── presigned POST policy ───────                   relaying the user's own token)
+browser ──2. multipart POST (file bytes)─▶ MinIO           (policy enforces exact key, Content-Type, max size)
+browser ──3. POST /api/v1/media/{id}/complete ▶ media-service (stat object: real size/type) ──▶ HMAC-signed descriptor
+browser ──4. SEND {contentType, attachment}─▶ chat-service  (verifies the HMAC locally: uploader = sender,
+                                                             same conversation & type; no network call)
+viewer  ──5. GET /api/v1/media/{id}/download ▶ media-service (participants only) ──▶ short-lived presigned GET
+```
+- **File bytes never pass through our services.** Browsers upload to and download from object storage directly.
+- **Limits are enforced by the storage itself.** The signed POST policy fixes the key, the Content-Type and a size range, so a client can't upload anything other than what it was approved for.
+
+  | Type | Max size | Allowed formats |
+  |---|---|---|
+  | Image | 10 MB | JPEG, PNG, GIF, WebP |
+  | Video | 100 MB | MP4, WebM, QuickTime |
+  | Audio | 20 MB | MP3, OGG, WAV, WebM, M4A |
+  | File | 25 MB | anything else; executables and scripts are refused |
+- **Attachments are verified, not trusted.** On complete, media-service checks the stored object's real size and type. It then **signs** a descriptor with HMAC-SHA256, using a secret shared with chat-service. chat-service checks that signature without calling media-service, so a client can't forge, move or relabel an attachment.
+- **In ScyllaDB, an attachment is a user-defined type (UDT)** embedded in the message row (`model.po.eo.AttachmentUdt`).
+- **Object storage runs on MinIO.** The upstream image is no longer published, so compose uses Chainguard's maintained build: `cgr.dev/chainguard/minio`.
+
 ## messaging-ui (BFF)
 - **Login and registration happen on the server.** The **refresh token never reaches the browser.** It lives in the server-side HttpSession, behind an `HttpOnly` + `SameSite=Lax` cookie, and session ids never appear in URLs.
 - **The page gets only the short-lived access token** (`POST /api/v1/session/token`, same origin). It uses it to talk to chat-service directly.
 - **Token refresh is synchronized per session.** Several tabs share one session, so a parallel refresh would replay the same single-use refresh token, which auth-service treats as theft.
 - **User search and lookup are proxied through the UI**, so auth-service is never exposed to browser traffic and needs no CORS.
 - All user content is rendered with `textContent` and Mustache escaping, so it can't inject HTML or scripts (XSS).
+
+## Real-time events
+| Frame | Direction | Purpose |
+|---|---|---|
+| `SEND` | client → server | text or media message |
+| `READ` | client → server | read up to a message (moves the read pointer) |
+| `TYPING` | both | typing indicator (never stored) |
+| `ACK` | server → sender | stored; always sent **before** fan-out |
+| `MESSAGE` | server → participants | new message |
+| `RECEIPT` | server → sender | `DELIVERED` (reached a live session, also across nodes) / `READ` |
+| `PRESENCE` | server → contacts | online / offline + last seen |
+| `ERROR` | server → client | validation / permission errors |
+
+- **One handler per client frame type:** each type has its own `FrameHandler` class, and `FrameDispatcher` routes to them. Adding a frame type means adding one class.
+- **Ticks:** ✓ means stored, ✓✓ delivered, highlighted ✓✓ read. Read pointers are written `USING TIMESTAMP` = message time, so they only ever move forward.
+- **Presence:** each user's owner node is the source of truth. `/api/v1/presence` asks each owner node over gRPC. Moving between nodes does not show the user as offline.
 
 ## IDs
 **Snowflake (64-bit, message IDs)**
@@ -151,4 +191,6 @@ Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbe
 2. ✅ auth-service
 3. ✅ Single-node chat + UI
 4. ✅ Multi-node: hash ring, TTL membership, gRPC forwarding, rebalancing
-5. ⏳ Receipts, presence, offline sync, load test, CI
+5. ✅ Receipts, typing, presence, offline sync
+6. ✅ Media messages (image, video, audio, file)
+7. ⏳ Load test + CI

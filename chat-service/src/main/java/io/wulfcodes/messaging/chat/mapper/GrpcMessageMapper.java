@@ -1,11 +1,14 @@
 package io.wulfcodes.messaging.chat.mapper;
 
+import io.wulfcodes.messaging.chat.grpc.proto.Attachment;
 import io.wulfcodes.messaging.chat.grpc.proto.ChatMessage;
 import io.wulfcodes.messaging.chat.grpc.proto.DeliverRequest;
 import io.wulfcodes.messaging.chat.grpc.proto.Presence;
 import io.wulfcodes.messaging.chat.grpc.proto.Receipt;
 import io.wulfcodes.messaging.chat.grpc.proto.Typing;
+import io.wulfcodes.messaging.chat.model.dto.response.AttachmentResponse;
 import io.wulfcodes.messaging.chat.model.dto.response.MessageResponse;
+import io.wulfcodes.messaging.common.model.vo.ContentType;
 import io.wulfcodes.messaging.chat.model.dto.response.PresenceResponse;
 import io.wulfcodes.messaging.chat.model.dto.response.ReceiptResponse;
 import io.wulfcodes.messaging.chat.model.dto.response.ServerFrame;
@@ -50,19 +53,34 @@ public class GrpcMessageMapper {
     // ---- message
 
     ChatMessage toProto(MessageResponse message) {
-        return ChatMessage.newBuilder()
+        ChatMessage.Builder builder = ChatMessage.newBuilder()
                 .setMessageId(message.messageId())
                 .setConversationId(message.conversationId())
                 .setSenderId(message.senderId())
-                .setBody(message.body())
+                .setBody(nullToEmpty(message.body()))
                 .setSentAtMillis(message.sentAt().toEpochMilli())
                 .setClientMessageId(nullToEmpty(message.clientMessageId()))
-                .build();
+                .setContentType(message.contentType().name());
+        if (message.attachment() != null) {
+            AttachmentResponse a = message.attachment();
+            builder.setAttachment(Attachment.newBuilder()
+                    .setAttachmentId(a.attachmentId()).setFileName(a.fileName())
+                    .setMimeType(a.mimeType()).setSize(a.size()).build());
+        }
+        return builder.build();
     }
 
     MessageResponse fromProto(ChatMessage message) {
+        AttachmentResponse attachment = message.hasAttachment()
+                ? new AttachmentResponse(message.getAttachment().getAttachmentId(), message.getAttachment().getFileName(),
+                        message.getAttachment().getMimeType(), message.getAttachment().getSize())
+                : null;
+        ContentType contentType = message.getContentType().isEmpty()
+                ? ContentType.TEXT
+                : ContentType.valueOf(message.getContentType());
         return new MessageResponse(message.getMessageId(), message.getConversationId(), message.getSenderId(),
-                message.getBody(), Instant.ofEpochMilli(message.getSentAtMillis()), emptyToNull(message.getClientMessageId()));
+                emptyToNull(message.getBody()), Instant.ofEpochMilli(message.getSentAtMillis()),
+                emptyToNull(message.getClientMessageId()), contentType, attachment);
     }
 
     // ---- receipt

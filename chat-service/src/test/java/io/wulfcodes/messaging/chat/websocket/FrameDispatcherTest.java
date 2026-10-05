@@ -47,7 +47,7 @@ class FrameDispatcherTest {
             public FrameType type() { return FrameType.SEND; }
             public void handle(ConnectionContext c, ClientFrame f) { throw new InvalidMessageException("empty"); }
         };
-        new FrameDispatcher(List.of(failing)).dispatch(connection, new ClientFrame(FrameType.SEND, "C", "c-7", "", null, null));
+        new FrameDispatcher(List.of(failing)).dispatch(connection, new ClientFrame(FrameType.SEND, "C", "c-7", "", null, null, null, null));
 
         assertThat(replies).singleElement().satisfies(reply -> {
             assertThat(reply.type()).isEqualTo(FrameType.ERROR);
@@ -69,6 +69,6 @@ class FrameDispatcherTest {
     }
 
     private static ClientFrame frame(FrameType type) {
-        return new ClientFrame(type, "C", null, "hi", "1", true);
+        return new ClientFrame(type, "C", null, "hi", "1", true, null, null);
     }
 }

@@ -12,6 +12,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import io.wulfcodes.messaging.common.model.vo.ContentType;
+
 import java.time.Instant;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -27,7 +29,7 @@ class RoutingDeliveryServiceImplTest {
     private static final NodeInfo SELF = new NodeInfo("chat-1", "chat-1:9090", "ws://a");
     private static final NodeInfo OTHER = new NodeInfo("chat-2", "chat-2:9090", "ws://b");
     private static final MessageResponse MESSAGE =
-            new MessageResponse("1", "C", "ALICE", "hi", Instant.EPOCH, "c-1");
+            new MessageResponse("1", "C", "ALICE", "hi", Instant.EPOCH, "c-1", ContentType.TEXT, null);
 
     @Mock
     private RingService ringService;

@@ -116,6 +116,11 @@ public class ConversationServiceImpl implements ConversationService {
     }
 
     @Override
+    public ConversationResponse getForParticipant(String conversationId, String userId) {
+        return toResponse(requireParticipant(conversationId, userId), userId);
+    }
+
+    @Override
     public List<String> contactsOf(String userId) {
         return inboxRepository.findByKeyUserId(userId).stream().map(InboxEntry::getPeerId).distinct().toList();
     }

@@ -8,7 +8,8 @@
 <div class="app"
      id="app"
      data-me-id="{{me.id}}"
-     data-chat-apis="{{chatApiUrls}}">
+     data-chat-apis="{{chatApiUrls}}"
+     data-media-api="{{mediaApiUrl}}">
 
   <aside class="sidebar">
     <header class="sidebar-header">
@@ -41,7 +42,10 @@
     </div>
 
     <form class="composer hidden" id="composer" autocomplete="off">
-      <input id="message-input" placeholder="Type a message" maxlength="4000">
+      <label class="attach" title="Attach a photo, video, audio or file">
+        📎<input type="file" id="file-input" hidden>
+      </label>
+      <input id="message-input" placeholder="Type a message (or a caption)" maxlength="4000">
       <button type="submit">Send</button>
     </form>
   </section>

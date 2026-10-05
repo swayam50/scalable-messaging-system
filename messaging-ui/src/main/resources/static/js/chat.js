@@ -5,6 +5,9 @@
  * - Asks chat-service which node owns this user (/api/v1/connect: consistent-hash ring) and opens the
  *   WebSocket on that node; re-asks on every reconnect, because the owner changes when nodes join/leave.
  * - Ticks: ✓ stored (ACK) · ✓✓ delivered (RECEIPT DELIVERED) · blue ✓✓ read (RECEIPT READ).
+ * - Media: ask media-service for an upload ticket, upload the file straight to object storage with the
+ *   signed form fields, "complete" it to get a signed descriptor, and send that in the SEND frame.
+ *   Displaying media fetches a short-lived download URL from media-service.
  * All user content is rendered with textContent (never innerHTML) to prevent XSS.
  */
 (() => {
@@ -13,6 +16,7 @@
   const app = document.getElementById('app');
   const ME = app.dataset.meId;
   const CHAT_APIS = app.dataset.chatApis.split(',').map((url) => url.trim()).filter(Boolean);
+  const MEDIA_API = app.dataset.mediaApi;
   const OWNER_CHANGED = 4001;          // close code sent by a node that no longer owns this user
   const TYPING_REPEAT_MS = 3000;       // re-send "typing" at most this often while typing
   const TYPING_IDLE_MS = 4000;         // stop "typing" after this long without keystrokes
@@ -37,6 +41,8 @@
     lastReadSent: new Map(),     // conversationId -> last READ id we sent
     typingSentAt: 0,
     typingIdleTimer: null,
+    downloadUrls: new Map(),     // attachmentId -> { url, expiresAt }
+    pinnedToBottom: true,        // keep the newest message in view unless the user scrolled up
   };
 
   // ---------- tokens & REST ----------
@@ -77,6 +83,15 @@
       return res.json();
     }
     throw new Error('No chat node reachable');
+  }
+
+  async function mediaApi(path, options = {}) {
+    const res = await fetch(MEDIA_API + path, {
+      ...options,
+      headers: { ...(options.headers || {}), Authorization: 'Bearer ' + await accessToken() },
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    return res.json();
   }
 
   async function displayName(userId) {
@@ -154,6 +169,9 @@
     const li = state.pending.get(frame.clientMessageId);
     if (li) {
       li.classList.remove('pending');
+      if (frame.message.attachment && !li.querySelector('.media, .file-link')) {
+        li.prepend(renderAttachment(frame.message));
+      }
       li.dataset.id = frame.message.messageId;
       li.dataset.sentAt = frame.message.sentAt;
       state.pending.delete(frame.clientMessageId);
@@ -225,13 +243,114 @@
     if (!state.current) return;
     const clientMessageId = crypto.randomUUID();
     // Optimistic bubble: shown immediately, confirmed by the ACK
-    const li = bubble({ senderId: ME, body, sentAt: null }, 'sending…');
+    const li = bubble({ senderId: ME, body, sentAt: null, contentType: 'TEXT' }, 'sending…');
     li.classList.add('pending');
     state.pending.set(clientMessageId, li);
     el('message-list').appendChild(li);
     scrollToBottom();
     stopTyping();
     sendFrame({ type: 'SEND', conversationId: state.current.conversationId, clientMessageId, body });
+  }
+
+  // ---------- media upload ----------
+  async function sendFile(file, caption) {
+    if (!state.current) return;
+    const conversationId = state.current.conversationId;
+    const clientMessageId = crypto.randomUUID();
+    const li = bubble({ senderId: ME, body: caption, sentAt: null, contentType: 'TEXT' }, 'uploading ' + file.name + '…');
+    li.classList.add('pending');
+    state.pending.set(clientMessageId, li);
+    el('message-list').appendChild(li);
+    scrollToBottom();
+    try {
+      // 1. ticket: media-service checks type, size and that I'm in this conversation
+      const ticket = await mediaApi('/api/v1/media/uploads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId, fileName: file.name, mimeType: file.type || 'application/octet-stream', size: file.size }),
+      });
+      // 2. upload straight to object storage (bytes never touch our services)
+      await uploadToStorage(ticket, file, (pct) => { li.querySelector('.meta').textContent = 'uploading… ' + pct + '%'; });
+      // 3. complete: media-service verifies the stored object and signs the descriptor
+      const attachment = await mediaApi('/api/v1/media/' + ticket.attachmentId + '/complete', { method: 'POST' });
+      li.querySelector('.meta').textContent = 'sending…';
+      if (!sendFrame({ type: 'SEND', conversationId, clientMessageId, contentType: ticket.contentType, attachment, body: caption || null })) {
+        throw new Error('offline');
+      }
+    } catch (e) {
+      li.classList.replace('pending', 'failed');
+      li.querySelector('.meta').textContent = 'not sent: ' + e.message;
+      state.pending.delete(clientMessageId);
+    }
+  }
+
+  /** Multipart POST with the signed policy fields; XHR (not fetch) to report upload progress. */
+  function uploadToStorage(ticket, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      Object.entries(ticket.formFields).forEach(([k, v]) => form.append(k, v));
+      form.append('file', file);   // must be the last field
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', ticket.uploadUrl);
+      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error('storage refused the upload (' + xhr.status + ')')));
+      xhr.onerror = () => reject(new Error('upload failed'));
+      xhr.send(form);
+    });
+  }
+
+  async function downloadUrl(attachmentId) {
+    const cached = state.downloadUrls.get(attachmentId);
+    if (cached && Date.parse(cached.expiresAt) - Date.now() > 30_000) return cached.url;
+    const d = await mediaApi('/api/v1/media/' + attachmentId + '/download');
+    state.downloadUrls.set(attachmentId, { url: d.url, expiresAt: d.expiresAt });
+    return d.url;
+  }
+
+  /** Renders an attachment; the presigned URL is fetched on demand (it expires, ids don't). */
+  function renderAttachment(msg) {
+    const a = msg.attachment;
+    const wrap = document.createElement('span');
+    const load = async (setUrl) => { try { setUrl(await downloadUrl(a.attachmentId)); } catch (e) { wrap.textContent = '⚠ ' + a.fileName; } };
+    if (msg.contentType === 'IMAGE') {
+      const img = document.createElement('img');
+      img.className = 'media';
+      img.alt = a.fileName;
+      img.loading = 'lazy';
+      img.onload = keepPinned;   // images grow the list after layout: stay at the bottom if we were there
+      load((url) => { img.src = url; img.onclick = () => window.open(url, '_blank', 'noopener'); });
+      wrap.appendChild(img);
+    } else if (msg.contentType === 'VIDEO' || msg.contentType === 'AUDIO') {
+      const media = document.createElement(msg.contentType === 'VIDEO' ? 'video' : 'audio');
+      media.className = 'media ' + msg.contentType.toLowerCase();
+      media.controls = true;
+      media.preload = 'metadata';
+      media.onloadedmetadata = keepPinned;
+      load((url) => { media.src = url; });
+      wrap.appendChild(media);
+    } else {
+      const link = document.createElement('a');
+      link.className = 'file-link';
+      link.textContent = '📎 ' + a.fileName + ' · ' + humanSize(a.size);
+      link.href = '#';
+      link.onclick = async (e) => { e.preventDefault(); window.location.href = await downloadUrl(a.attachmentId); };
+      wrap.appendChild(link);
+    }
+    return wrap;
+  }
+
+  function humanSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  /** Same labels the server uses for inbox previews. */
+  function previewText(msg) {
+    const labels = { IMAGE: '📷 Photo', VIDEO: '🎬 Video', AUDIO: '🎵 Audio' };
+    if (!msg.contentType || msg.contentType === 'TEXT') return msg.body;
+    const label = msg.contentType === 'FILE' ? '📎 ' + msg.attachment.fileName : labels[msg.contentType];
+    return msg.body ? label + ' · ' + msg.body : label;
   }
 
   function onComposerInput() {
@@ -294,7 +413,7 @@
     Object.assign(entry, {
       lastMessageId: msg.messageId,
       lastSenderId: msg.senderId,
-      preview: msg.body.slice(0, 100),
+      preview: previewText(msg).slice(0, 100),
       lastMessageAt: msg.sentAt,
       unread: unread || (entry.unread && msg.senderId !== ME),
     });
@@ -401,8 +520,10 @@
     li.className = 'bubble' + (msg.senderId === ME ? ' mine' : '');
     if (msg.messageId) li.dataset.id = msg.messageId;
     if (msg.sentAt) li.dataset.sentAt = msg.sentAt;
+    if (msg.attachment) li.appendChild(renderAttachment(msg));
     const text = document.createElement('span');
-    text.textContent = msg.body;
+    text.className = 'caption';
+    text.textContent = msg.body || '';
     const meta = document.createElement('span');
     meta.className = 'meta';
     meta.textContent = metaText;
@@ -473,6 +594,11 @@
   function scrollToBottom() {
     const box = el('messages');
     box.scrollTop = box.scrollHeight;
+    state.pinnedToBottom = true;
+  }
+
+  function keepPinned() {
+    if (state.pinnedToBottom) scrollToBottom();
   }
 
   function setStatus(text, cls) {
@@ -491,7 +617,20 @@
     }
   });
   el('message-input').addEventListener('input', onComposerInput);
+  el('file-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const caption = el('message-input').value.trim();
+      el('message-input').value = '';
+      sendFile(file, caption);
+    }
+    e.target.value = '';   // allow picking the same file again
+  });
   el('load-older').addEventListener('click', loadOlder);
+  el('messages').addEventListener('scroll', () => {
+    const box = el('messages');
+    state.pinnedToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  });
   document.addEventListener('visibilitychange', markReadIfVisible);   // read when the user comes back
 
   connect();
