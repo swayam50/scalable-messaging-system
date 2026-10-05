@@ -21,12 +21,13 @@ spring:
 
 media:
   storage:
-    internal-endpoint: ${MINIO_INTERNAL_ENDPOINT:http://localhost:9000}
-    public-endpoint: ${MINIO_PUBLIC_ENDPOINT:http://localhost:9000}
-    region: ${MINIO_REGION:us-east-1}
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin-secret}
-    bucket: ${MINIO_BUCKET:chat-media}
+    # Any S3-compatible store: SeaweedFS locally, AWS S3 / Cloudflare R2 in production
+    internal-endpoint: ${STORAGE_INTERNAL_ENDPOINT:http://localhost:8333}
+    public-endpoint: ${STORAGE_PUBLIC_ENDPOINT:http://localhost:8333}
+    region: ${STORAGE_REGION:us-east-1}
+    access-key: ${STORAGE_ACCESS_KEY:media-access-key}
+    secret-key: ${STORAGE_SECRET_KEY:media-secret-key-change-me}
+    bucket: ${STORAGE_BUCKET:chat-media}
   upload-url-ttl: 10m
   download-url-ttl: 10m
   signing-secret: ${MEDIA_SIGNING_SECRET:local-dev-media-signing-secret-change-me}

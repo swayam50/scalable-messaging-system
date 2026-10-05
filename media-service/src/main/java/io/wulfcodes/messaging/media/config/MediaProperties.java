@@ -23,8 +23,8 @@ public record MediaProperties(
 ) {
 
     /**
-     * @param internalEndpoint how THIS service reaches MinIO (e.g. http://minio:9000 inside compose)
-     * @param publicEndpoint   how BROWSERS reach MinIO; presigned URLs are signed for this host,
+     * @param internalEndpoint how THIS service reaches the S3 store (e.g. http://seaweedfs:8333 inside compose)
+     * @param publicEndpoint   how BROWSERS reach the S3 store; presigned URLs are signed for this host,
      *                         because the host is part of the signature
      */
     public record Storage(String internalEndpoint, String publicEndpoint, String region,

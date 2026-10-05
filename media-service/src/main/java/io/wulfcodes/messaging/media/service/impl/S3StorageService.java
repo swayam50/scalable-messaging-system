@@ -11,7 +11,7 @@ import io.minio.StatObjectResponse;
 import io.minio.errors.ErrorResponseException;
 import io.minio.errors.MinioException;
 import io.wulfcodes.messaging.media.config.MediaProperties;
-import io.wulfcodes.messaging.media.config.MinioConfig;
+import io.wulfcodes.messaging.media.config.S3ClientConfig;
 import io.wulfcodes.messaging.media.exception.StorageUnavailableException;
 import io.wulfcodes.messaging.media.service.spec.StorageService;
 import lombok.extern.slf4j.Slf4j;
@@ -29,20 +29,21 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * MinIO-backed storage. Browsers upload/download directly against MinIO with presigned
- * requests, so file bytes never pass through this JVM.
+ * Object storage over the S3 API (SeaweedFS locally; AWS S3 / R2 / any S3-compatible store in
+ * production), using the MinIO Java SDK purely as an S3 client. Browsers upload/download directly
+ * against the store with presigned requests, so file bytes never pass through this JVM.
  */
 @Slf4j
 @Service
-public class MinioStorageService implements StorageService {
+public class S3StorageService implements StorageService {
 
     private final MinioClient storageClient;
     private final MinioClient presignClient;
     private final MediaProperties.Storage storage;
 
-    public MinioStorageService(@Qualifier(MinioConfig.STORAGE_CLIENT) MinioClient storageClient,
-                               @Qualifier(MinioConfig.PRESIGN_CLIENT) MinioClient presignClient,
-                               MediaProperties properties) {
+    public S3StorageService(@Qualifier(S3ClientConfig.STORAGE_CLIENT) MinioClient storageClient,
+                            @Qualifier(S3ClientConfig.PRESIGN_CLIENT) MinioClient presignClient,
+                            MediaProperties properties) {
         this.storageClient = storageClient;
         this.presignClient = presignClient;
         this.storage = properties.storage();

@@ -20,11 +20,12 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
-import org.testcontainers.containers.MinIOContainer;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import org.testcontainers.utility.DockerImageName;
+import org.testcontainers.images.builder.Transferable;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.ByteArrayOutputStream;
@@ -33,6 +34,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
@@ -42,8 +44,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 /**
- * Real end-to-end upload flow against MinIO (Testcontainers) and PostgreSQL:
- * ticket -> multipart POST straight to MinIO -> complete -> signed descriptor -> download URL.
+ * Real end-to-end upload flow against SeaweedFS's S3 gateway (Testcontainers) and PostgreSQL:
+ * ticket -> multipart POST straight to storage -> complete -> signed descriptor -> download URL.
  * Membership checks against chat-service are mocked; JWTs are mocked ("token-alice" = ALICE).
  */
 @Testcontainers
@@ -55,18 +57,30 @@ class MediaFlowIntegrationTest {
     @ServiceConnection
     static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.6");
 
-    /** The upstream minio/minio image is no longer published; Chainguard's build is a drop-in. */
+    private static final String ACCESS_KEY = "test-access-key";
+    private static final String SECRET_KEY = "test-secret-key-0123456789";
+    private static final int S3_PORT = 8333;
+
+    /** SeaweedFS (Apache-2.0) with its S3 gateway; the MinIO Java SDK works against any S3 server. */
     @Container
-    static final MinIOContainer MINIO = new MinIOContainer(
-            DockerImageName.parse("cgr.dev/chainguard/minio:latest").asCompatibleSubstituteFor("minio/minio"))
-            .withUserName("testuser").withPassword("testpassword");
+    static final GenericContainer<?> SEAWEEDFS = new GenericContainer<>("chrislusf/seaweedfs:4.48")
+            .withCommand("server", "-dir=/data", "-s3", "-s3.port=" + S3_PORT,
+                    "-s3.config=/etc/seaweedfs/s3.json", "-master.volumeSizeLimitMB=64")
+            .withCopyToContainer(Transferable.of("""
+                    {"identities":[{"name":"media-service",
+                      "credentials":[{"accessKey":"%s","secretKey":"%s"}],
+                      "actions":["Admin","Read","Write","List","Tagging"]}]}""".formatted(ACCESS_KEY, SECRET_KEY)),
+                    "/etc/seaweedfs/s3.json")
+            .withExposedPorts(S3_PORT)
+            .waitingFor(Wait.forLogMessage(".*Start Seaweed S3 API Server.*", 1).withStartupTimeout(Duration.ofSeconds(90)));
 
     @DynamicPropertySource
     static void storage(DynamicPropertyRegistry registry) {
-        registry.add("media.storage.internal-endpoint", MINIO::getS3URL);
-        registry.add("media.storage.public-endpoint", MINIO::getS3URL);
-        registry.add("media.storage.access-key", MINIO::getUserName);
-        registry.add("media.storage.secret-key", MINIO::getPassword);
+        String endpoint = "http://" + SEAWEEDFS.getHost() + ":" + SEAWEEDFS.getMappedPort(S3_PORT);
+        registry.add("media.storage.internal-endpoint", () -> endpoint);
+        registry.add("media.storage.public-endpoint", () -> endpoint);
+        registry.add("media.storage.access-key", () -> ACCESS_KEY);
+        registry.add("media.storage.secret-key", () -> SECRET_KEY);
         registry.add("media.storage.bucket", () -> "test-media");
     }
 
@@ -102,7 +116,7 @@ class MediaFlowIntegrationTest {
         // completing before uploading is refused
         assertThat(post("/api/v1/media/" + attachmentId + "/complete", null)).hasStatus(HttpStatus.CONFLICT);
 
-        // browser-style multipart POST straight to MinIO with the signed policy fields
+        // browser-style multipart POST straight to storage with the signed policy fields
         HttpResponse<String> upload = uploadToStorage(ticket, png, "image/png");
         assertThat(upload.statusCode()).isEqualTo(204);
 

@@ -16,23 +16,23 @@ A WhatsApp-style chat backend built to scale horizontally:
 | `messaging-common` | Shared library: Snowflake/ULID generators, shared value objects and DTOs | — |
 | `auth-service` | Register, login, JWT access + refresh tokens, users | PostgreSQL |
 | `chat-service` | WebSockets, hash ring, gRPC forwarding, message storage | ScyllaDB |
-| `media-service` | Attachments: presigned uploads/downloads, verification, signed descriptors | PostgreSQL + MinIO |
+| `media-service` | Attachments: presigned uploads/downloads, verification, signed descriptors | PostgreSQL + SeaweedFS (S3) |
 | `messaging-ui` | Login and chat pages (Mustache + vanilla JS WebSocket) | — |
 
 ## Stack
-Java 25 · Spring Boot 4.1 · Spring gRPC · MinIO · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
+Java 25 · Spring Boot 4.1 · Spring gRPC · SeaweedFS (S3) · Spring Security (OAuth2 resource server, Nimbus JOSE) · Spring Data JPA · Flyway · MapStruct · Lombok · ScyllaDB · PostgreSQL · gRPC · Testcontainers · Docker
 
 ## Run locally
 ```bash
 cp .env.example .env          # adjust credentials
-docker compose up -d          # PostgreSQL + ScyllaDB + MinIO
+docker compose up -d          # PostgreSQL + ScyllaDB + SeaweedFS
 ./mvnw verify                 # build + all tests
 ```
 Run the whole stack in Docker, then open **http://localhost:8080**:
 ```bash
 docker compose --profile app up -d --build
 ```
-This starts PostgreSQL, ScyllaDB, MinIO, auth-service, **three chat-service nodes** (8082–8084), media-service (8085) and the UI.
+This starts PostgreSQL, ScyllaDB, SeaweedFS, auth-service, **three chat-service nodes** (8082–8084), media-service (8085) and the UI.
 Register two users in two browsers (or one normal and one private window) and chat. The status line
 shows which node each user is connected to. Stop one node (`docker compose stop chat-service-1`) and
 watch its users reconnect to their new owner.
@@ -117,7 +117,7 @@ Message IDs are serialized as **strings**: they are 64-bit, and JavaScript numbe
 ```
 browser ──1. POST /api/v1/media/uploads──▶ media-service   (type/size policy + membership check via chat-service,
         ◀── presigned POST policy ───────                   relaying the user's own token)
-browser ──2. multipart POST (file bytes)─▶ MinIO           (policy enforces exact key, Content-Type, max size)
+browser ──2. multipart POST (file bytes)─▶ SeaweedFS S3   (policy enforces exact key, Content-Type, max size)
 browser ──3. POST /api/v1/media/{id}/complete ▶ media-service (stat object: real size/type) ──▶ HMAC-signed descriptor
 browser ──4. SEND {contentType, attachment}─▶ chat-service  (verifies the HMAC locally: uploader = sender,
                                                              same conversation & type; no network call)
@@ -134,7 +134,10 @@ viewer  ──5. GET /api/v1/media/{id}/download ▶ media-service (participants
   | File | 25 MB | anything else; executables and scripts are refused |
 - **Attachments are verified, not trusted.** On complete, media-service checks the stored object's real size and type. It then **signs** a descriptor with HMAC-SHA256, using a secret shared with chat-service. chat-service checks that signature without calling media-service, so a client can't forge, move or relabel an attachment.
 - **In ScyllaDB, an attachment is a user-defined type (UDT)** embedded in the message row (`model.po.eo.AttachmentUdt`).
-- **Object storage runs on MinIO.** The upstream image is no longer published, so compose uses Chainguard's maintained build: `cgr.dev/chainguard/minio`.
+- **Object storage is any S3-compatible server.**
+  - **Locally:** **SeaweedFS** (Apache-2.0) with its S3 gateway, on port 8333.
+  - **In production:** AWS S3 or Cloudflare R2, with only config changes.
+  - **Client:** the code uses the MinIO Java SDK purely as an S3 client. The integration test runs the full flow against real SeaweedFS, including SeaweedFS rejecting an upload that breaks the signed policy.
 
 ## messaging-ui (BFF)
 - **Login and registration happen on the server.** The **refresh token never reaches the browser.** It lives in the server-side HttpSession, behind an `HttpOnly` + `SameSite=Lax` cookie, and session ids never appear in URLs.

@@ -39,19 +39,18 @@ services:
       retries: 20
       start_period: 60s
 
-  # S3-compatible object storage for media. The upstream minio/minio image is no longer published;
-  # Chainguard's maintained build of MinIO is used instead.
-  minio:
-    image: cgr.dev/chainguard/minio:latest
-    command: server /data --console-address :9001
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin-secret}
+  # S3-compatible object storage for media: SeaweedFS (Apache-2.0) with its S3 gateway.
+  # Credentials come from the s3-identities config below.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=1024
+    configs:
+      - source: s3-identities
+        target: /etc/seaweedfs/s3.json
     ports:
-      - "9000:9000"   # S3 API (browsers upload/download here with presigned requests)
-      - "9001:9001"   # web console
+      - "8333:8333"   # S3 API (browsers upload/download here with presigned requests)
     volumes:
-      - minio-data:/data
+      - seaweedfs-data:/data
 
   # ---------- application services (profile: app) ----------
   auth-service:
@@ -132,10 +131,10 @@ services:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-messaging}
       DB_USERNAME: ${POSTGRES_USER:-messaging}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
-      MINIO_INTERNAL_ENDPOINT: http://minio:9000         # container -> MinIO
-      MINIO_PUBLIC_ENDPOINT: http://localhost:9000       # browser -> MinIO (presigned URLs are signed for this host)
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin-secret}
+      STORAGE_INTERNAL_ENDPOINT: http://seaweedfs:8333   # container -> S3 store
+      STORAGE_PUBLIC_ENDPOINT: http://localhost:8333     # browser -> S3 store (presigned URLs are signed for this host)
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-media-access-key}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-media-secret-key-change-me}
       MEDIA_SIGNING_SECRET: ${MEDIA_SIGNING_SECRET:-local-dev-media-signing-secret-change-me}
       CHAT_API_URLS: http://chat-service-1:8082,http://chat-service-2:8082,http://chat-service-3:8082
       AUTH_JWKS_URI: http://auth-service:8081/.well-known/jwks.json
@@ -146,7 +145,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_started
 
   messaging-ui:
@@ -164,7 +163,15 @@ services:
       auth-service:
         condition: service_started
 
+configs:
+  # S3 identity for media-service (inline config; values come from .env)
+  s3-identities:
+    content: |
+      {"identities": [{"name": "media-service",
+        "credentials": [{"accessKey": "${STORAGE_ACCESS_KEY:-media-access-key}", "secretKey": "${STORAGE_SECRET_KEY:-media-secret-key-change-me}"}],
+        "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
+
 volumes:
-  minio-data:
+  seaweedfs-data:
   postgres-data:
   scylla-data:
